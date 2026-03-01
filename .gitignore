@@ -1,0 +1,5 @@
+.DS_Store
+*.map
+*.rom
+*.bin
+_cache
