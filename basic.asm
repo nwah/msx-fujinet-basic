@@ -10,12 +10,29 @@ VALTYP  equ 0xF663
 USR     equ 0xF7F8
 
         extern _basic_fnconfig
+        extern _basic_fngetdevice
+        extern _basic_nopen
 
         public call_handler
+        public banner
+
+banner:
+        push    hl
+        ld      hl, banner_msg
+        call    _puts
+        pop     hl
+        ret
+
+banner_msg:
+        defb "FujiNet BASIC",0
 
 command_list:
        	defb "FNCONFIG",0
         defw fnconfig
+        defb "FNGETDEVICE",0
+        defw fngetdevice
+        defb "NOPEN",0
+        defw nopen
         defb 0
 
 call_handler:
@@ -55,7 +72,7 @@ _callde:
 		ret
 
 activate_fujinet:
-        ld      A,$D4
+        ld      A,$D4   ; TODO: determine correct slot dynamically
         out     ($A8),A
         ret
 
@@ -64,7 +81,29 @@ fnconfig:
         call    _basic_fnconfig
         ret
 
-mixed:
+fngetdevice:
+        call    activate_fujinet
+        CALL	CHKCHAR
+        DEFB	"("
+        CALL    EVALINTPARAM
+        PUSH    DE
+        CALL	CHKCHAR
+        DEFB	","
+        CALL    EVALTXTPARAM
+        PUSH    HL
+        CALL    GETSTRPNT
+        POP     HL
+        PUSH    DE
+        # DEC     HL     ; go back to closing " of string
+        # LD      (HL),0 ; set to 0 for C-style nul-terminated str
+        # INC     HL     ; forward to next token
+        CALL	CHKCHAR
+        DEFB	")"
+        call    _basic_fngetdevice
+        ret
+
+nopen:
+        call    activate_fujinet
         CALL	CHKCHAR
         DEFB	"("
         CALL    EVALTXTPARAM
@@ -80,13 +119,41 @@ mixed:
         CALL    EVALINTPARAM
         PUSH    DE
         CALL	CHKCHAR
+        DEFB	","
+        CALL    EVALINTPARAM
+        PUSH    DE
+        CALL	CHKCHAR
         DEFB	")"
-        CALL    _basic_fnconfig
-        RET
+        call    _basic_nopen
+        pop     BC
+        pop     BC
+        xor     A
+
+        # ld      A,1
+        ret
+
 
 ;=========================================
 ; Based on examples by Nyyrikki and zPasi
 ; https://www.msx.org/wiki/CALL
+
+_puts:
+		ld  a, (hl)
+        cp  0
+        ret z
+        call CHPUT
+        inc hl
+        jr  _puts
+
+_putsn:
+        ld  a, c
+        cp  0
+        ret z
+        dec c
+        ld  a, (hl)
+        call CHPUT
+        inc hl
+        jr  _putsn
 
 GETSTRPNT:
 ; OUT:
