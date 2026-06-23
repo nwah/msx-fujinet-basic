@@ -1,209 +1,382 @@
-CHPUT   equ 0x00A2
+; FujiNet BASIC: command dispatch + MSX-BASIC parsing primitives.
+;
+; The argument parsers below expose the MSX-BASIC interpreter's expression
+; evaluator to C. MSX-BASIC keeps the program text pointer in HL, but C calls
+; clobber HL (and most registers), so we stash it in the RAM variable _txtptr
+; and thread it through every primitive. That lets a command handler - argument
+; parsing and all - be written entirely in C.
+
 PROCNM  equ 0xFD89
-CALBAS	equ	0x0159
+CALBAS  equ 0x0159
 ERRHAND equ 0x406F
 FRMEVL  equ 0x4C64
-GETBYT  equ 0x521C
-FRESTR	equ	0x67D0
+FRMQNT  equ 0x542F      ; evaluate expression -> 16-bit integer in DE
+GETBYT  equ 0x521C      ; evaluate expression -> 8-bit value in A (and E)
+FRESTR  equ 0x67D0
 CHRGTR  equ 0x4666
+PTRGET  equ 0x5EA4      ; parse a variable reference -> DE = storage address
+STRINI  equ 0x6627      ; allocate string space (A = length) -> DSCTMP
 VALTYP  equ 0xF663
-USR     equ 0xF7F8
+SUBFLG  equ 0xF6A5      ; 0 = simple variable / array element
+DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
 
+        ; C command handlers (one per BASIC command)
         extern _basic_fnconfig
         extern _basic_fngetdevice
         extern _basic_nopen
+        extern _basic_ninit
+        extern _basic_nclose
+        extern _basic_nstatus
+        extern _basic_nread
+        extern _basic_nreadnb
+        extern _basic_nwrite
+        extern _basic_njsonparse
+        extern _basic_njsonquery
+        extern _basic_nhttppost
+
+        extern _basic_nhttpput
+        extern _basic_nhttpdel
+        extern _basic_nhttpaddhdr
+        extern _basic_nhttpstarthdr
+        extern _basic_nhttpendhdr
+        extern _basic_nhttpmode
+        extern _basic_naccept
+        extern _basic_fnadd
+        extern _basic_fnstatus
+        extern _basic_fnhello
+
+        ; RAM scratch defined in C (so the ROM crt places it in RAM)
+        extern _txtptr
+        extern _strbuf
+        extern _varptr
+        extern _vartype
+        extern _saved_slot
+
+        ; Parsing primitives exported to C
+        public _cmd_expect
+        public _cmd_peek
+        public _cmd_get_int
+        public _cmd_get_byte
+        public _cmd_get_string
+        public _cmd_get_var
+        public _cmd_set_string
+        public _cmd_set_int
+        public _fujinet_activate
+        public _fujinet_deactivate
 
         public call_handler
-        public banner
 
-banner:
-        push    hl
-        ld      hl, banner_msg
-        call    _puts
-        pop     hl
-        ret
-
-banner_msg:
-        defb "FujiNet BASIC",0
-
+;======================================================================
+; Command table: name (NUL-terminated) followed by C handler address.
 command_list:
-       	defb "FNCONFIG",0
-        defw fnconfig
+        defb "FNCONFIG",0
+        defw _basic_fnconfig
         defb "FNGETDEVICE",0
-        defw fngetdevice
+        defw _basic_fngetdevice
         defb "NOPEN",0
-        defw nopen
+        defw _basic_nopen
+        defb "NINIT",0
+        defw _basic_ninit
+        defb "NCLOSE",0
+        defw _basic_nclose
+        defb "NSTATUS",0
+        defw _basic_nstatus
+        defb "NREAD",0
+        defw _basic_nread
+        defb "NREADNB",0
+        defw _basic_nreadnb
+        defb "NWRITE",0
+        defw _basic_nwrite
+        defb "NJSONPARSE",0
+        defw _basic_njsonparse
+        defb "NJSONQUERY",0
+        defw _basic_njsonquery
+        defb "NHTTPPOST",0
+        defw _basic_nhttppost
+
+        defb "NHTTPPUT",0
+        defw _basic_nhttpput
+        defb "NHTTPDEL",0
+        defw _basic_nhttpdel
+        defb "NHTTPADDHDR",0
+        defw _basic_nhttpaddhdr
+        defb "NHTTPSTARTHDR",0
+        defw _basic_nhttpstarthdr
+        defb "NHTTPENDHDR",0
+        defw _basic_nhttpendhdr
+        defb "NHTTPMODE",0
+        defw _basic_nhttpmode
+        defb "NACCEPT",0
+        defw _basic_naccept
+        defb "FNADD",0
+        defw _basic_fnadd
+        defb "FNSTATUS",0
+        defw _basic_fnstatus
+        defb "FNHELLO",0
+        defw _basic_fnhello
         defb 0
 
+;----------------------------------------------------------------------
+; call_handler: invoked by the BASIC expansion-statement hook.
+;   In:  HL -> program text just after the command name
+;        PROCNM holds the upper-cased command name
+;   Out: CY clear  -> command handled
+;        CY set    -> not one of ours (HL left untouched)
 call_handler:
-	    push hl
-		ld  hl,command_list
+        ld      (_txtptr),hl        ; hand the text pointer to the C primitives
+        ld      hl,command_list
 _check_command:
-		ld	de,PROCNM
-_loop:	ld	a,(de)
-		cp	(hl)
-		jr	nz,_tonextcmd	; not equal
-		inc	de
-		inc	hl
-		and	a
-		jr	nz,_loop	; no end of instruction name, go checking
-		ld	e,(hl)
-		inc	hl
-		ld	d,(hl)
-		pop	hl		; routine address
-		call _callde		; call routine
-		and	a
-		ret
+        ld      de,PROCNM
+_loop:
+        ld      a,(de)
+        cp      (hl)
+        jr      nz,_tonextcmd
+        inc     de
+        inc     hl
+        and     a
+        jr      nz,_loop            ; not at end of name yet
+        ; matched: read the handler address that follows the name
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)              ; DE = handler address
+        ex      de,hl               ; HL = handler address
+        call    _call_hl            ; run the C handler
+        ld      hl,(_txtptr)        ; resume BASIC after the consumed tokens
+        or      a                   ; CY clear = handled
+        ret
 
 _tonextcmd:
-		ld	c,0ffh
-		xor	a
-		cpir			; skip to end of instruction name
-		inc	hl
-		inc	hl		; skip address
-		cp	(hl)
-		jr	nz, _check_command	; not end of table, go checking
-		pop	hl
-		scf
-		ret
-
-_callde:
-		push de
-		ret
-
-activate_fujinet:
-        ld      A,$D4   ; TODO: determine correct slot dynamically
-        out     ($A8),A
+        ld      c,0ffh
+        xor     a
+        cpir                        ; skip to end of this name
+        inc     hl
+        inc     hl                  ; skip handler address
+        cp      (hl)
+        jr      nz,_check_command   ; not end of table, keep looking
+        ld      hl,(_txtptr)        ; not ours: restore text pointer
+        scf
         ret
 
-fnconfig:
-        call    activate_fujinet
-        call    _basic_fnconfig
+_call_hl:
+        jp      (hl)
+
+; void fujinet_activate(void)
+; Page in the FujiNet cartridge. Saves the current primary-slot register so
+; fujinet_deactivate can restore it. Only commands that talk to the device
+; need this; pure-software commands (e.g. FNADD) must NOT switch slots.
+_fujinet_activate:
+        in      a,(0A8h)            ; save current slot configuration
+        ld      (_saved_slot),a
+        ld      a,0D4h              ; TODO: determine correct slot dynamically
+        out     (0A8h),a
         ret
 
-fngetdevice:
-        call    activate_fujinet
-        CALL	CHKCHAR
-        DEFB	"("
-        CALL    EVALINTPARAM
-        PUSH    DE
-        CALL	CHKCHAR
-        DEFB	","
-        CALL    EVALTXTPARAM
-        PUSH    HL
-        CALL    GETSTRPNT
-        POP     HL
-        PUSH    DE
-        # DEC     HL     ; go back to closing " of string
-        # LD      (HL),0 ; set to 0 for C-style nul-terminated str
-        # INC     HL     ; forward to next token
-        CALL	CHKCHAR
-        DEFB	")"
-        call    _basic_fngetdevice
+; void fujinet_deactivate(void)
+; Restore the primary-slot register to the value saved by fujinet_activate.
+; Must be called before writing back to BASIC variables, since those may live
+; in page 2 (0x8000-0xBFFF) which is occupied by the cartridge while active.
+_fujinet_deactivate:
+        ld      a,(_saved_slot)
+        out     (0A8h),a
         ret
 
-nopen:
-        call    activate_fujinet
-        CALL	CHKCHAR
-        DEFB	"("
-        CALL    EVALTXTPARAM
-        PUSH    HL
-        CALL    GETSTRPNT
-        POP     HL
-        PUSH    DE
-        DEC     HL     ; go back to closing " of string
-        LD      (HL),0 ; set to 0 for C-style nul-terminated str
-        INC     HL     ; forward to next token
-        CALL	CHKCHAR
-        DEFB	","
-        CALL    EVALINTPARAM
-        PUSH    DE
-        CALL	CHKCHAR
-        DEFB	","
-        CALL    EVALINTPARAM
-        PUSH    DE
-        CALL	CHKCHAR
-        DEFB	")"
-        call    _basic_nopen
-        pop     BC
-        pop     BC
-        xor     A
+;======================================================================
+; Parsing primitives (callable from C).
+; Each loads the shared text pointer into HL, calls into BASIC, and writes
+; the advanced pointer back to _txtptr.
+;======================================================================
 
-        # ld      A,1
+;----------------------------------------------------------------------
+; void cmd_expect(char c)            __z88dk_fastcall  (c in L)
+; Require the next program char to be c and consume it, else Syntax error.
+_cmd_expect:
+        ld      e,l                 ; E = expected char (CHRGTR preserves DE)
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; HL -> current char, A = char
+        cp      e
+        jp      nz,_syntax_error
+        ld      ix,CHRGTR
+        call    CALBAS              ; advance past the matched char
+        ld      (_txtptr),hl
         ret
 
+;----------------------------------------------------------------------
+; char cmd_peek(void)
+; Return the next program char (spaces skipped) WITHOUT consuming it.
+; Useful for optional arguments, e.g. peeking for ')' vs ','.
+_cmd_peek:
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; HL -> current char, A = char
+        ld      (_txtptr),hl        ; normalise past any skipped spaces
+        ld      l,a
+        ld      h,0
+        ret
 
-;=========================================
-; Based on examples by Nyyrikki and zPasi
-; https://www.msx.org/wiki/CALL
+;----------------------------------------------------------------------
+; int cmd_get_int(void)
+; Evaluate a numeric expression, return it as a 16-bit integer in HL.
+_cmd_get_int:
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; A = current char (primes the evaluator)
+        ld      ix,FRMQNT
+        call    CALBAS              ; DE = value, HL advanced
+        ld      (_txtptr),hl
+        ex      de,hl
+        ret
 
-_puts:
-		ld  a, (hl)
-        cp  0
-        ret z
-        call CHPUT
-        inc hl
-        jr  _puts
+;----------------------------------------------------------------------
+; unsigned char cmd_get_byte(void)
+; Evaluate a numeric expression, return it as an 8-bit value in L.
+_cmd_get_byte:
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; A = current char (primes the evaluator)
+        ld      ix,GETBYT
+        call    CALBAS              ; A = E = value, HL advanced
+        ld      (_txtptr),hl
+        ld      l,a
+        ld      h,0
+        ret
 
-_putsn:
-        ld  a, c
-        cp  0
-        ret z
-        dec c
-        ld  a, (hl)
-        call CHPUT
-        inc hl
-        jr  _putsn
+;----------------------------------------------------------------------
+; char *cmd_get_string(void)
+; Evaluate a string expression and return a NUL-terminated copy in _strbuf
+; (valid until the next cmd_get_string call). Copying out avoids mutating
+; the BASIC program text. Length is capped at 255 bytes by the BASIC string
+; descriptor format.
+_cmd_get_string:
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; A = current char (primes the evaluator)
+        ld      ix,FRMEVL
+        call    CALBAS              ; evaluate -> FAC, HL advanced
+        ld      (_txtptr),hl
+        ld      a,(VALTYP)
+        cp      3                   ; string type?
+        jp      nz,_type_mismatch
+        ld      ix,FRESTR
+        call    CALBAS              ; HL -> string descriptor
+        ld      b,(hl)              ; B = length
+        inc     hl
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)              ; DE = string data address
+        ld      hl,_strbuf
+_cgs_copy:
+        ld      a,b
+        or      a
+        jr      z,_cgs_done
+        ld      a,(de)
+        ld      (hl),a
+        inc     de
+        inc     hl
+        dec     b
+        jr      _cgs_copy
+_cgs_done:
+        ld      (hl),0              ; NUL terminate
+        ld      hl,_strbuf
+        ret
 
-GETSTRPNT:
-; OUT:
-; DE = String Address
-; B  = Lenght
-        LD      HL,(USR)
-        LD      B,(HL)
-        INC     HL
-        LD      E,(HL)
-        INC     HL
-        LD      D,(HL)
-        # EX      DE,HL
-        RET
+;----------------------------------------------------------------------
+; char cmd_get_var(void)
+; Parse a variable reference (the assignment target) at the text pointer.
+; Remembers its storage address (_varptr) and type (_vartype), and returns
+; the type: 2 = integer, 3 = string, 4 = single, 8 = double.
+_cmd_get_var:
+        xor     a
+        ld      (SUBFLG),a          ; simple variable / array element
+        ld      hl,(_txtptr)
+        dec     hl
+        ld      ix,CHRGTR
+        call    CALBAS              ; A = current char (PTRGET needs it primed)
+        ld      ix,PTRGET
+        call    CALBAS              ; DE = storage address, HL advanced
+        ld      (_txtptr),hl
+        ld      (_varptr),de
+        ld      a,(VALTYP)
+        ld      (_vartype),a
+        ld      l,a
+        ld      h,0
+        ret
 
-EVALINTPARAM:
-       	LD	    IX,GETBYT
-       	CALL	CALBAS		    ; Evaluate expression
-        RET
+;----------------------------------------------------------------------
+; void cmd_set_string(const char *s)   __z88dk_fastcall  (s in HL)
+; Assign a NUL-terminated string to the (string) variable parsed by
+; cmd_get_var. Allocates fresh BASIC string space so each result is
+; independent. Raises Type mismatch if the target is not a string.
+_cmd_set_string:
+        ld      a,(_vartype)
+        cp      3
+        jp      nz,_type_mismatch
+        ; measure length, capped at 255 (HL = source)
+        ld      e,l
+        ld      d,h                 ; DE = scan pointer
+        ld      c,0                 ; C = length
+_css_len:
+        ld      a,(de)
+        or      a
+        jr      z,_css_got
+        ld      a,c
+        cp      255
+        jr      z,_css_got
+        inc     de
+        inc     c
+        jr      _css_len
+_css_got:
+        push    hl                  ; save source pointer
+        push    bc                  ; save length (in C)
+        ld      a,c
+        ld      ix,STRINI
+        call    CALBAS              ; reserve A bytes; HL -> DSCTMP descriptor
+        inc     hl
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)              ; DE = reserved string-space address
+        pop     bc                  ; C = length
+        pop     hl                  ; HL = source
+        ld      b,0
+        ld      a,c
+        or      a
+        jr      z,_css_assign
+        ldir                        ; copy C bytes (HL) -> (DE)
+_css_assign:
+        ld      hl,DSCTMP
+        ld      de,(_varptr)
+        ld      bc,3
+        ldir                        ; descriptor -> variable storage
+        ret
 
-EVALTXTPARAM:
-    	LD	    IX,FRMEVL
-    	CALL	CALBAS		    ; Evaluate expression
-        LD      A,(VALTYP)
-        CP      3               ; Text type?
-        JP      NZ,TYPE_MISMATCH
-        PUSH	HL
-        LD	    IX,FRESTR       ; Free the temporary string
-        CALL	CALBAS
-        POP 	HL
-        RET
+;----------------------------------------------------------------------
+; void cmd_set_int(int value)   __z88dk_fastcall  (value in HL)
+; Store a 16-bit integer directly into the integer variable (type 2,
+; % suffix) parsed by cmd_get_var. Raises Type mismatch for any other
+; variable type (string, single, double).
+_cmd_set_int:
+        ld      a,(_vartype)
+        cp      2
+        jp      nz,_type_mismatch
+        ld      de,(_varptr)
+        ex      de,hl               ; HL = varptr, DE = value
+        ld      (hl),e              ; low byte
+        inc     hl
+        ld      (hl),d              ; high byte
+        ret
 
-CHKCHAR:
-        CALL	GETPREVCHAR	; Get previous basic char
-        EX	(SP),HL
-    	CP	(HL) 	        ; Check if good char
-    	JR	NZ,SYNTAX_ERROR	; No, Syntax error
-    	INC	HL
-    	EX	(SP),HL
-    	INC	HL		; Get next basic char
-
-GETPREVCHAR:
-    	DEC	HL
-    	LD	IX,CHRGTR
-    	JP      CALBAS
-
-TYPE_MISMATCH:
-        LD      E,13
-        DB      1
-
-SYNTAX_ERROR:
-        LD      E,2
-    	LD	IX,ERRHAND	; Call the Basic error handler
-    	JP	CALBAS
+;======================================================================
+; Error exits
+;======================================================================
+_type_mismatch:
+        ld      e,13
+        db      1                   ; "LD BC,nn" swallows the next "LD E,2"
+_syntax_error:
+        ld      e,2
+        ld      ix,ERRHAND
+        jp      CALBAS
