@@ -23,6 +23,13 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
+#define FUJINET_BASIC_VERSION "0.0.0"
+
+// CALL FUJINET
+void basic_fujinet(void) {
+  cputs("FujiNet BASIC v" FUJINET_BASIC_VERSION "\r\n");
+}
+
 // CALL FNCONFIG
 void basic_fnconfig(void) {
   fujinet_activate();

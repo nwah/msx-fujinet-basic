@@ -21,6 +21,7 @@ SUBFLG  equ 0xF6A5      ; 0 = simple variable / array element
 DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
 
         ; C command handlers (one per BASIC command)
+        extern _basic_fujinet
         extern _basic_fnconfig
         extern _basic_fngetdevice
         extern _basic_nopen
@@ -117,6 +118,8 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
 ;======================================================================
 ; Command table: name (NUL-terminated) followed by C handler address.
 command_list:
+        defb "FUJINET",0
+        defw _basic_fujinet
         defb "FNCONFIG",0
         defw _basic_fnconfig
         defb "FNGETDEVICE",0

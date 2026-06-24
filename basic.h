@@ -58,6 +58,7 @@ extern void fujinet_deactivate(void);
 // Command handlers (dispatched by call_handler in basic.asm). Each handler
 // parses its own arguments via the primitives above.
 // ---------------------------------------------------------------------------
+extern void basic_fujinet(void);
 extern void basic_fnconfig(void);
 extern bool basic_fngetdevice(void);
 extern int  basic_nopen(void);
