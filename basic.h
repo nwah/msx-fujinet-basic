@@ -78,8 +78,56 @@ extern void basic_nhttpstarthdr(void);
 extern void basic_nhttpendhdr(void);
 extern void basic_nhttpmode(void);
 extern void basic_naccept(void);
-extern void basic_fnadd(void);
-extern void basic_fnstatus(void);
-extern void basic_fnhello(void);
+
+
+// WiFi
+extern void basic_fwifienabled(void);
+extern void basic_fwifistatus(void);
+extern void basic_fwifiscan(void);
+extern void basic_fwifiscanresult(void);
+extern void basic_fgetwifissid(void);
+extern void basic_fsetwifissid(void);
+
+// Host Slots
+extern void basic_floadhostslots(void);
+extern void basic_fsavehostslots(void);
+extern void basic_fgethostslot(void);
+extern void basic_fsethostslot(void);
+extern void basic_fmounthost(void);
+extern void basic_fgethostprefix(void);
+extern void basic_fsethostprefix(void);
+
+// Device Slots
+extern void basic_floaddevslots(void);
+extern void basic_fsavedevslots(void);
+extern void basic_fgetdevslothost(void);
+extern void basic_fgetdevslotmode(void);
+extern void basic_fgetdevslotfile(void);
+extern void basic_fsetdevslothost(void);
+extern void basic_fsetdevslotmode(void);
+extern void basic_fsetdevslotfile(void);
+extern void basic_fmount(void);
+extern void basic_funmount(void);
+extern void basic_fmountall(void);
+extern void basic_fenabledev(void);
+extern void basic_fdisabledev(void);
+extern void basic_fsetfile(void);
+
+// Directory
+extern void basic_fopendir(void);
+extern void basic_fopendirex(void);
+extern void basic_fclosedir(void);
+extern void basic_freaddir(void);
+extern void basic_fsetdirpos(void);
+
+// Boot
+extern void basic_fsetbootcfg(void);
+extern void basic_fsetbootmode(void);
+
+// Hash
+extern void basic_fhashclear(void);
+extern void basic_fhashadd(void);
+extern void basic_fhashcalc(void);
+extern void basic_fhashdata(void);
 
 #endif // BASIC_H

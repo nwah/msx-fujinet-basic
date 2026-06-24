@@ -336,40 +336,473 @@ void basic_naccept(void) {
   fujinet_deactivate();
 }
 
-// CALL FNADD(a, b, result)
-//   Computes a + b and stores the sum in the numeric variable result.
-//   Pure software: it must not page in the FujiNet cartridge.
-void basic_fnadd(void) {
-  cmd_expect('(');
-  int a = cmd_get_int();
-  cmd_expect(',');
-  int b = cmd_get_int();
-  cmd_expect(',');
-  cmd_get_var();         // target numeric variable (e.g. R)
-  cmd_expect(')');
 
-  cmd_set_int((uint16_t)(a + b));
+
+// ============================================================
+// Static globals shared by the commands below
+// ============================================================
+static NetConfig  net_config;
+static HostSlot   host_slots[8];
+static DeviceSlot device_slots[8];
+static SSIDInfo   ssid_info;
+// binary output sizes for MD5, SHA1, SHA256, SHA512
+static const uint8_t hash_bin_sizes[4] = {16, 20, 32, 64};
+
+// ============================================================
+// WiFi commands
+// ============================================================
+
+// CALL FWIFIENABLED(S%)
+void basic_fwifienabled(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  fujinet_activate();
+  bool enabled = fuji_get_wifi_enabled();
+  fujinet_deactivate();
+  cmd_set_int(enabled ? 1 : 0);
 }
 
-// CALL FNSTATUS(result)
-//   Stores a single-byte status value (0-255) in the numeric variable result.
-//   Pure software: like FNADD it must not page in the FujiNet cartridge.
-//   Exercises the 1-byte integer return path through cmd_set_int().
-void basic_fnstatus(void) {
+// CALL FWIFISTATUS(S%)
+void basic_fwifistatus(void) {
   cmd_expect('(');
-  cmd_get_var();         // target numeric variable (e.g. S)
+  cmd_get_var();
   cmd_expect(')');
-
-  cmd_set_int(6502);   // demo status code
+  fujinet_activate();
+  uint8_t wst = 0;
+  fuji_get_wifi_status(&wst);
+  fujinet_deactivate();
+  cmd_set_int((int)wst);
 }
 
-// CALL FNHELLO(result$)
-//   Assigns the constant string "HELLO" to the string variable result$.
-//   Lets you verify the string-return path without any FujiNet hardware.
-void basic_fnhello(void) {
+// CALL FWIFISCAN(S%)
+void basic_fwifiscan(void) {
   cmd_expect('(');
-  cmd_get_var();         // target string variable (e.g. A$)
+  cmd_get_var();
+  cmd_expect(')');
+  fujinet_activate();
+  uint8_t cnt = 0;
+  fuji_scan_for_networks(&cnt);
+  fujinet_deactivate();
+  cmd_set_int((int)cnt);
+}
+
+// CALL FWIFISCANRESULT(n, ssid$, rssi%)
+void basic_fwifiscanresult(void) {
+  cmd_expect('(');
+  int n = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();  // ssid$
+  unsigned char *ssid_ptr  = varptr;
+  unsigned char  ssid_type = vartype;
+  cmd_expect(',');
+  cmd_get_var();  // rssi% (varptr/vartype left pointing here)
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_get_scan_result((uint8_t)n, &ssid_info);
+  fujinet_deactivate();
+  cmd_set_int((int)(signed char)ssid_info.rssi);
+  varptr = ssid_ptr; vartype = ssid_type;
+  cmd_set_string(ssid_info.ssid);
+}
+
+// CALL FGETWIFISSID(ssid$)
+void basic_fgetwifissid(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_get_ssid(&net_config);
+  fujinet_deactivate();
+  cmd_set_string(net_config.ssid);
+}
+
+// CALL FSETWIFISSID(ssid$, password$)
+void basic_fsetwifissid(void) {
+  cmd_expect('(');
+  cmd_get_string();
+  strncpy(net_config.ssid, strbuf, SSID_MAXLEN-1);
+  net_config.ssid[SSID_MAXLEN-1] = '\0';
+  cmd_expect(',');
+  cmd_get_string();
+  strncpy(net_config.password, strbuf, MAX_PASSWORD_LEN-1);
+  net_config.password[MAX_PASSWORD_LEN-1] = '\0';
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_ssid(&net_config);
+  fujinet_deactivate();
+}
+
+// ============================================================
+// Host Slot commands
+// ============================================================
+
+// CALL FLOADHOSTSLOTS
+void basic_floadhostslots(void) {
+  fujinet_activate();
+  fuji_get_host_slots(host_slots, 8);
+  fujinet_deactivate();
+}
+
+// CALL FSAVEHOSTSLOTS
+void basic_fsavehostslots(void) {
+  fujinet_activate();
+  fuji_put_host_slots(host_slots, 8);
+  fujinet_deactivate();
+}
+
+// CALL FGETHOSTSLOT(slot, name$)  -- pure software
+void basic_fgethostslot(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  if (slot < 0) slot = 0;
+  if (slot > 7) slot = 7;
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  cmd_set_string((char*)host_slots[slot]);
+}
+
+// CALL FSETHOSTSLOT(slot, name$)  -- pure software
+void basic_fsethostslot(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  if (slot < 0) slot = 0;
+  if (slot > 7) slot = 7;
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  strncpy((char*)host_slots[slot], strbuf, 31);
+  ((char*)host_slots[slot])[31] = '\0';
+}
+
+// CALL FMOUNTHOST(hs)
+void basic_fmounthost(void) {
+  cmd_expect('(');
+  int hs = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_mount_host_slot((uint8_t)hs);
+  fujinet_deactivate();
+}
+
+// CALL FGETHOSTPREFIX(hs, prefix$)
+void basic_fgethostprefix(void) {
+  cmd_expect('(');
+  int hs = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_get_host_prefix((uint8_t)hs, buf);
+  fujinet_deactivate();
+  cmd_set_string(buf);
+}
+
+// CALL FSETHOSTPREFIX(hs, prefix$)
+void basic_fsethostprefix(void) {
+  cmd_expect('(');
+  int hs = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_host_prefix((uint8_t)hs, strbuf);
+  fujinet_deactivate();
+}
+
+// ============================================================
+// Device Slot commands
+// ============================================================
+
+// CALL FLOADDEVSLOTS
+void basic_floaddevslots(void) {
+  fujinet_activate();
+  fuji_get_device_slots(device_slots, 8);
+  fujinet_deactivate();
+}
+
+// CALL FSAVEDEVSLOTS
+void basic_fsavedevslots(void) {
+  fujinet_activate();
+  fuji_put_device_slots(device_slots, 8);
+  fujinet_deactivate();
+}
+
+// CALL FGETDEVSLOTHOST(slot, S%)  -- pure software
+void basic_fgetdevslothost(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  cmd_set_int((int)device_slots[slot].hostSlot);
+}
+
+// CALL FGETDEVSLOTMODE(slot, S%)  -- pure software
+void basic_fgetdevslotmode(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  cmd_set_int((int)device_slots[slot].mode);
+}
+
+// CALL FGETDEVSLOTFILE(slot, file$)  -- pure software
+void basic_fgetdevslotfile(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  cmd_set_string((char*)device_slots[slot].file);
+}
+
+// CALL FSETDEVSLOTHOST(slot, host)  -- pure software
+void basic_fsetdevslothost(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  int host = cmd_get_int();
+  cmd_expect(')');
+  device_slots[slot].hostSlot = (uint8_t)host;
+}
+
+// CALL FSETDEVSLOTMODE(slot, mode)  -- pure software
+void basic_fsetdevslotmode(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  int mode = cmd_get_int();
+  cmd_expect(')');
+  device_slots[slot].mode = (uint8_t)mode;
+}
+
+// CALL FSETDEVSLOTFILE(slot, file$)  -- pure software
+void basic_fsetdevslotfile(void) {
+  cmd_expect('(');
+  int slot = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  strncpy((char*)device_slots[slot].file, strbuf, FILE_MAXLEN-1);
+  device_slots[slot].file[FILE_MAXLEN-1] = '\0';
+}
+
+// CALL FMOUNT(ds, mode)
+void basic_fmount(void) {
+  cmd_expect('(');
+  int ds = cmd_get_int();
+  cmd_expect(',');
+  int mode = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_mount_disk_image((uint8_t)ds, (uint8_t)mode);
+  fujinet_deactivate();
+}
+
+// CALL FUNMOUNT(ds)
+void basic_funmount(void) {
+  cmd_expect('(');
+  int ds = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_unmount_disk_image((uint8_t)ds);
+  fujinet_deactivate();
+}
+
+// CALL FMOUNTALL
+void basic_fmountall(void) {
+  fujinet_activate();
+  fuji_mount_all();
+  fujinet_deactivate();
+}
+
+// CALL FENABLEDEV(d)
+void basic_fenabledev(void) {
+  cmd_expect('(');
+  int d = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_enable_device((uint8_t)d);
+  fujinet_deactivate();
+}
+
+// CALL FDISABLEDEV(d)
+void basic_fdisabledev(void) {
+  cmd_expect('(');
+  int d = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_disable_device((uint8_t)d);
+  fujinet_deactivate();
+}
+
+// CALL FSETFILE(ds, hs, mode, file$)
+void basic_fsetfile(void) {
+  cmd_expect('(');
+  int ds = cmd_get_int();
+  cmd_expect(',');
+  int hs = cmd_get_int();
+  cmd_expect(',');
+  int mode = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_device_filename((uint8_t)mode, (uint8_t)hs, (uint8_t)ds, strbuf);
+  fujinet_deactivate();
+}
+
+// ============================================================
+// Directory commands
+// ============================================================
+
+// CALL FOPENDIR(hs, path$)
+void basic_fopendir(void) {
+  cmd_expect('(');
+  int hs = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_open_directory_filter((uint8_t)hs, strbuf, NULL);
+  fujinet_deactivate();
+}
+
+// CALL FOPENDIREX(hs, path$, filter$)
+void basic_fopendirex(void) {
+  cmd_expect('(');
+  int hs = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  strcpy(buf, strbuf);    // save path before filter overwrites strbuf
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_open_directory_filter((uint8_t)hs, buf, strbuf);
+  fujinet_deactivate();
+}
+
+// CALL FCLOSEDIR
+void basic_fclosedir(void) {
+  fujinet_activate();
+  fuji_close_directory();
+  fujinet_deactivate();
+}
+
+// CALL FREADDIR(result$)
+void basic_freaddir(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_read_directory(255, 0, buf);
+  fujinet_deactivate();
+  cmd_set_string(buf);
+}
+
+// CALL FSETDIRPOS(pos)
+void basic_fsetdirpos(void) {
+  cmd_expect('(');
+  int pos = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_directory_position((uint16_t)pos);
+  fujinet_deactivate();
+}
+
+// ============================================================
+// Boot commands
+// ============================================================
+
+// CALL FSETBOOTCFG(toggle)
+void basic_fsetbootcfg(void) {
+  cmd_expect('(');
+  int toggle = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_boot_config((uint8_t)toggle);
+  fujinet_deactivate();
+}
+
+// CALL FSETBOOTMODE(mode)
+void basic_fsetbootmode(void) {
+  cmd_expect('(');
+  int mode = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_boot_mode((uint8_t)mode);
+  fujinet_deactivate();
+}
+
+// ============================================================
+// Hash commands
+// ============================================================
+
+// CALL FHASHCLEAR
+void basic_fhashclear(void) {
+  fujinet_activate();
+  fuji_hash_clear();
+  fujinet_deactivate();
+}
+
+// CALL FHASHADD(data$)
+void basic_fhashadd(void) {
+  cmd_expect('(');
+  cmd_get_string();
+  cmd_expect(')');
+  uint16_t len = (uint16_t)strlen(strbuf);
+  fujinet_activate();
+  fuji_hash_add((uint8_t*)strbuf, len);
+  fujinet_deactivate();
+}
+
+// CALL FHASHCALC(type, hex, discard, result$)
+void basic_fhashcalc(void) {
+  cmd_expect('(');
+  int type = cmd_get_int();
+  cmd_expect(',');
+  int as_hex = cmd_get_int();
+  cmd_expect(',');
+  int discard = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
   cmd_expect(')');
 
-  cmd_set_string("HELLO");
+  memset(buf2, 0, sizeof(buf2));
+  fujinet_activate();
+  fuji_hash_calculate((hash_alg_t)type, (bool)as_hex, (bool)discard, (uint8_t*)buf2);
+  fujinet_deactivate();
+
+  if (!as_hex && type >= 0 && type < 4)
+    buf2[hash_bin_sizes[type]] = '\0';
+
+  cmd_set_string(buf2);
+}
+
+// CALL FHASHDATA(type, data$, hex, result$)
+void basic_fhashdata(void) {
+  cmd_expect('(');
+  int type = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();                          // data$ -> strbuf
+  uint16_t len = (uint16_t)strlen(strbuf);  // measure before strbuf is reused
+  cmd_expect(',');
+  int as_hex = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+
+  memset(buf2, 0, sizeof(buf2));
+  fujinet_activate();
+  fuji_hash_data((hash_alg_t)type, (uint8_t*)strbuf, len, (bool)as_hex, (uint8_t*)buf2);
+  fujinet_deactivate();
+
+  if (!as_hex && type >= 0 && type < 4)
+    buf2[hash_bin_sizes[type]] = '\0';
+
+  cmd_set_string(buf2);
 }

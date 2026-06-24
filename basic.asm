@@ -41,9 +41,57 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         extern _basic_nhttpendhdr
         extern _basic_nhttpmode
         extern _basic_naccept
-        extern _basic_fnadd
-        extern _basic_fnstatus
-        extern _basic_fnhello
+
+
+        ; WiFi
+        extern _basic_fwifienabled
+        extern _basic_fwifistatus
+        extern _basic_fwifiscan
+        extern _basic_fwifiscanresult
+        extern _basic_fgetwifissid
+        extern _basic_fsetwifissid
+
+        ; Host Slots
+        extern _basic_floadhostslots
+        extern _basic_fsavehostslots
+        extern _basic_fgethostslot
+        extern _basic_fsethostslot
+        extern _basic_fmounthost
+        extern _basic_fgethostprefix
+        extern _basic_fsethostprefix
+
+        ; Device Slots
+        extern _basic_floaddevslots
+        extern _basic_fsavedevslots
+        extern _basic_fgetdevslothost
+        extern _basic_fgetdevslotmode
+        extern _basic_fgetdevslotfile
+        extern _basic_fsetdevslothost
+        extern _basic_fsetdevslotmode
+        extern _basic_fsetdevslotfile
+        extern _basic_fmount
+        extern _basic_funmount
+        extern _basic_fmountall
+        extern _basic_fenabledev
+        extern _basic_fdisabledev
+        extern _basic_fsetfile
+
+        ; Directory
+        extern _basic_fopendir
+        extern _basic_fopendirex
+        extern _basic_fclosedir
+        extern _basic_freaddir
+        extern _basic_fsetdirpos
+
+        ; Boot
+        extern _basic_fsetbootcfg
+        extern _basic_fsetbootmode
+
+        ; Hash
+        extern _basic_fhashclear
+        extern _basic_fhashadd
+        extern _basic_fhashcalc
+        extern _basic_fhashdata
 
         ; RAM scratch defined in C (so the ROM crt places it in RAM)
         extern _txtptr
@@ -93,7 +141,6 @@ command_list:
         defw _basic_njsonquery
         defb "NHTTPPOST",0
         defw _basic_nhttppost
-
         defb "NHTTPPUT",0
         defw _basic_nhttpput
         defb "NHTTPDEL",0
@@ -108,12 +155,89 @@ command_list:
         defw _basic_nhttpmode
         defb "NACCEPT",0
         defw _basic_naccept
-        defb "FNADD",0
-        defw _basic_fnadd
-        defb "FNSTATUS",0
-        defw _basic_fnstatus
-        defb "FNHELLO",0
-        defw _basic_fnhello
+
+        ; WiFi
+        defb "FWIFIENABLED",0
+        defw _basic_fwifienabled
+        defb "FWIFISTATUS",0
+        defw _basic_fwifistatus
+        defb "FWIFISCAN",0
+        defw _basic_fwifiscan
+        defb "FWIFISCANRESULT",0
+        defw _basic_fwifiscanresult
+        defb "FGETWIFISSID",0
+        defw _basic_fgetwifissid
+        defb "FSETWIFISSID",0
+        defw _basic_fsetwifissid
+        ; Host Slots
+        defb "FLOADHOSTSLOTS",0
+        defw _basic_floadhostslots
+        defb "FSAVEHOSTSLOTS",0
+        defw _basic_fsavehostslots
+        defb "FGETHOSTSLOT",0
+        defw _basic_fgethostslot
+        defb "FSETHOSTSLOT",0
+        defw _basic_fsethostslot
+        defb "FMOUNTHOST",0
+        defw _basic_fmounthost
+        defb "FGETHOSTPREFIX",0
+        defw _basic_fgethostprefix
+        defb "FSETHOSTPREFIX",0
+        defw _basic_fsethostprefix
+        ; Device Slots
+        defb "FLOADDEVSLOTS",0
+        defw _basic_floaddevslots
+        defb "FSAVEDEVSLOTS",0
+        defw _basic_fsavedevslots
+        defb "FGETDEVSLOTHOST",0
+        defw _basic_fgetdevslothost
+        defb "FGETDEVSLOTMODE",0
+        defw _basic_fgetdevslotmode
+        defb "FGETDEVSLOTFILE",0
+        defw _basic_fgetdevslotfile
+        defb "FSETDEVSLOTHOST",0
+        defw _basic_fsetdevslothost
+        defb "FSETDEVSLOTMODE",0
+        defw _basic_fsetdevslotmode
+        defb "FSETDEVSLOTFILE",0
+        defw _basic_fsetdevslotfile
+        defb "FMOUNT",0
+        defw _basic_fmount
+        defb "FUNMOUNT",0
+        defw _basic_funmount
+        defb "FMOUNTALL",0
+        defw _basic_fmountall
+        defb "FENABLEDEV",0
+        defw _basic_fenabledev
+        defb "FDISABLEDEV",0
+        defw _basic_fdisabledev
+        defb "FSETFILE",0
+        defw _basic_fsetfile
+        ; Directory
+        defb "FOPENDIR",0
+        defw _basic_fopendir
+        defb "FOPENDIREX",0
+        defw _basic_fopendirex
+        defb "FCLOSEDIR",0
+        defw _basic_fclosedir
+        defb "FREADDIR",0
+        defw _basic_freaddir
+        defb "FSETDIRPOS",0
+        defw _basic_fsetdirpos
+        ; Boot
+        defb "FSETBOOTCFG",0
+        defw _basic_fsetbootcfg
+        defb "FSETBOOTMODE",0
+        defw _basic_fsetbootmode
+        ; Hash
+        defb "FHASHCLEAR",0
+        defw _basic_fhashclear
+        defb "FHASHADD",0
+        defw _basic_fhashadd
+        defb "FHASHCALC",0
+        defw _basic_fhashcalc
+        defb "FHASHDATA",0
+        defw _basic_fhashdata
         defb 0
 
 ;----------------------------------------------------------------------
