@@ -294,7 +294,8 @@ _call_hl:
 _fujinet_activate:
         in      a,(0A8h)            ; save current slot configuration
         ld      (_saved_slot),a
-        ld      a,0D4h              ; TODO: determine correct slot dynamically
+        and     0CFh                ; clear page 2 slot bits (5-4)
+        or      010h                ; set page 2 to slot 1
         out     (0A8h),a
         ret
 
