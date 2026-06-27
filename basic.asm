@@ -88,11 +88,25 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         extern _basic_fsetbootcfg
         extern _basic_fsetbootmode
 
+        ; App Keys
+        extern _basic_fsetappkey
+        extern _basic_freadappkey
+        extern _basic_fwriteappkey
+        ; Base64
+        extern _basic_fb64encin
+        extern _basic_fb64enccompute
+        extern _basic_fb64enclen
+        extern _basic_fb64encout
+        extern _basic_fb64decin
+        extern _basic_fb64deccompute
+        extern _basic_fb64declen
+        extern _basic_fb64decout
         ; Hash
         extern _basic_fhashclear
         extern _basic_fhashadd
         extern _basic_fhashcalc
         extern _basic_fhashdata
+
 
         ; RAM scratch defined in C (so the ROM crt places it in RAM)
         extern _txtptr
@@ -232,6 +246,30 @@ command_list:
         defw _basic_fsetbootcfg
         defb "FSETBOOTMODE",0
         defw _basic_fsetbootmode
+        ; App Keys
+        defb "FSETAPPKEY",0
+        defw _basic_fsetappkey
+        defb "FREADAPPKEY",0
+        defw _basic_freadappkey
+        defb "FWRITEAPPKEY",0
+        defw _basic_fwriteappkey
+        ; Base64
+        defb "FB64ENCIN",0
+        defw _basic_fb64encin
+        defb "FB64ENCCOMPUTE",0
+        defw _basic_fb64enccompute
+        defb "FB64ENCLEN",0
+        defw _basic_fb64enclen
+        defb "FB64ENCOUT",0
+        defw _basic_fb64encout
+        defb "FB64DECIN",0
+        defw _basic_fb64decin
+        defb "FB64DECCOMPUTE",0
+        defw _basic_fb64deccompute
+        defb "FB64DECLEN",0
+        defw _basic_fb64declen
+        defb "FB64DECOUT",0
+        defw _basic_fb64decout
         ; Hash
         defb "FHASHCLEAR",0
         defw _basic_fhashclear
@@ -241,6 +279,7 @@ command_list:
         defw _basic_fhashcalc
         defb "FHASHDATA",0
         defw _basic_fhashdata
+
         defb 0
 
 ;----------------------------------------------------------------------

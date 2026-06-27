@@ -125,10 +125,24 @@ extern void basic_fsetdirpos(void);
 extern void basic_fsetbootcfg(void);
 extern void basic_fsetbootmode(void);
 
+// App Keys
+extern void basic_fsetappkey(void);
+extern void basic_freadappkey(void);
+extern void basic_fwriteappkey(void);
+// Base64
+extern void basic_fb64encin(void);
+extern void basic_fb64enccompute(void);
+extern void basic_fb64enclen(void);
+extern void basic_fb64encout(void);
+extern void basic_fb64decin(void);
+extern void basic_fb64deccompute(void);
+extern void basic_fb64declen(void);
+extern void basic_fb64decout(void);
 // Hash
 extern void basic_fhashclear(void);
 extern void basic_fhashadd(void);
 extern void basic_fhashcalc(void);
 extern void basic_fhashdata(void);
+
 
 #endif // BASIC_H

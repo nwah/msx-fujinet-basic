@@ -1,4 +1,4 @@
-ROM_CFILES = main.c basic.c
+ROM_CFILES = main.c basic.c fujinet-msx-ext.c
 ROM_AFILES = basic.asm
 
 fujinet-basic.rom: $(ROM_AFILES) $(ROM_CFILES)

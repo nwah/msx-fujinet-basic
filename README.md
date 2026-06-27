@@ -215,3 +215,29 @@ Use `hex=1` when capturing results in a BASIC string variable; binary output (`h
 CALL FHASHDATA(2, "Hello, world!", 1, H$)
 PRINT H$
 ```
+
+---
+
+## App Keys
+
+App Keys may be used by program to store user preferences or other small amounts of data on the FujiNet.
+
+| Size | Value | Notes |
+| ---  | ---   | ---   |
+| 2 bytes | creator ID | see below |
+| 1 byte | app ID | Creator-specified value (0-255) |
+| 1 byte | key ID | Creator-specified value (0-255) |
+
+| Command | Description |
+|---|---|
+| `CALL FSETAPPKEY(creator_id, app_id)` | Set credentials for subsequent app key operations. Must be called first. |
+| `CALL FWRITEAPPKEY(key_id, data$)` | Write data$ to app key key_id (max 64 bytes). |
+| `CALL FREADAPPKEY(key_id, result$, S%)` | Read app key key_id into result$; S% receives the byte count. |
+
+App keys are stored as files in the `/FujiNet` directory on the SD card. **Note that only SD storage is currently supported for app key storage, and app key reads/writes will fail if no SD card is installed.**  The file name is constructed using the hexadecimal values for creator, app, and key.  e.g. `/FujiNet/B0C1010A.key`
+
+### Creator IDs
+
+This is an unsigned 16-bit value, which should allow for more than enough creators. Values from 0-255 (0x00-0xFF) are reserved for internal use by FujiNet - please don't use any value in this range. See FujiNet wiki for [list of Creator IDs](https://github.com/FujiNetWIFI/fujinet-firmware/wiki/SIO-Command-%24DC-Open-App-Key#known-creator-ids-and-appids).
+
+---

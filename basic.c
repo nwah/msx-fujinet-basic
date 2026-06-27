@@ -23,7 +23,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.0.1"
+#define FUJINET_BASIC_VERSION "0.1.0"
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -352,8 +352,96 @@ static NetConfig  net_config;
 static HostSlot   host_slots[8];
 static DeviceSlot device_slots[8];
 static SSIDInfo   ssid_info;
-// binary output sizes for MD5, SHA1, SHA256, SHA512
-static const uint8_t hash_bin_sizes[4] = {16, 20, 32, 64};
+static unsigned long b64_len;
+static const uint8_t hash_bin_sizes[4] = {16, 20, 32, 64}; // MD5, SHA1, SHA256, SHA512
+
+// ============================================================
+// Base64 commands
+// ============================================================
+
+// CALL FB64ENCIN(data$)
+void basic_fb64encin(void) {
+  cmd_expect('(');
+  cmd_get_string();
+  cmd_expect(')');
+  uint16_t len = (uint16_t)strlen(strbuf);
+  fujinet_activate();
+  fuji_base64_encode_input(strbuf, len);
+  fujinet_deactivate();
+}
+
+// CALL FB64ENCCOMPUTE
+void basic_fb64enccompute(void) {
+  fujinet_activate();
+  fuji_base64_encode_compute();
+  fujinet_deactivate();
+}
+
+// CALL FB64ENCLEN(S%)
+void basic_fb64enclen(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  b64_len = 0;
+  fujinet_activate();
+  fuji_base64_encode_length(&b64_len);
+  fujinet_deactivate();
+  cmd_set_int((int)b64_len);
+}
+
+// CALL FB64ENCOUT(result$)
+void basic_fb64encout(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  memset(buf2, 0, sizeof(buf2));
+  fujinet_activate();
+  fuji_base64_encode_output(buf2, 255);
+  fujinet_deactivate();
+  cmd_set_string(buf2);
+}
+
+// CALL FB64DECIN(data$)
+void basic_fb64decin(void) {
+  cmd_expect('(');
+  cmd_get_string();
+  cmd_expect(')');
+  uint16_t len = (uint16_t)strlen(strbuf);
+  fujinet_activate();
+  fuji_base64_decode_input(strbuf, len);
+  fujinet_deactivate();
+}
+
+// CALL FB64DECCOMPUTE
+void basic_fb64deccompute(void) {
+  fujinet_activate();
+  fuji_base64_decode_compute();
+  fujinet_deactivate();
+}
+
+// CALL FB64DECLEN(S%)
+void basic_fb64declen(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  b64_len = 0;
+  fujinet_activate();
+  fuji_base64_decode_length(&b64_len);
+  fujinet_deactivate();
+  cmd_set_int((int)b64_len);
+}
+
+// CALL FB64DECOUT(result$)
+void basic_fb64decout(void) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  memset(buf2, 0, sizeof(buf2));
+  fujinet_activate();
+  fuji_base64_decode_output(buf2, 255);
+  fujinet_deactivate();
+  cmd_set_string(buf2);
+}
 
 // ============================================================
 // WiFi commands
@@ -746,6 +834,62 @@ void basic_fsetbootmode(void) {
 }
 
 // ============================================================
+// App Key commands
+// ============================================================
+
+// CALL FSETAPPKEY(creator_id, app_id)
+//   Set credentials for subsequent app key operations. Must be called first.
+void basic_fsetappkey(void) {
+  cmd_expect('(');
+  int creator_id = cmd_get_int();
+  cmd_expect(',');
+  int app_id = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  fuji_set_appkey_details((uint16_t)creator_id, (uint8_t)app_id, DEFAULT);
+  fujinet_deactivate();
+}
+
+// CALL FREADAPPKEY(key_id, result$, S%)
+//   Read app key key_id into result$; S% receives the byte count.
+void basic_freadappkey(void) {
+  cmd_expect('(');
+  int key_id = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();                            // result$
+  unsigned char *str_ptr  = varptr;
+  unsigned char  str_type = vartype;
+  cmd_expect(',');
+  cmd_get_var();                            // S% (varptr/vartype left pointing here)
+  cmd_expect(')');
+  uint16_t count = 0;
+  memset(buf, 0, sizeof(buf));              // pre-zero so strlen gives actual length
+  fujinet_activate();
+  fuji_read_appkey((uint8_t)key_id, &count, (uint8_t *)buf);
+  fujinet_deactivate();
+  count = (uint16_t)strlen(buf);            // trim to actual content
+  if (count > 255) count = 255;
+  cmd_set_int((int)count);                  // S% = bytes read
+  varptr = str_ptr; vartype = str_type;
+  cmd_set_string("hello");                      // result$ = key data
+}
+
+// CALL FWRITEAPPKEY(key_id, data$)
+//   Write data$ to app key key_id (max 64 bytes).
+void basic_fwriteappkey(void) {
+  cmd_expect('(');
+  int key_id = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();                         // data in strbuf
+  cmd_expect(')');
+  uint16_t len = (uint16_t)strlen(strbuf);
+  if (len > MAX_APPKEY_LEN) len = MAX_APPKEY_LEN;
+  fujinet_activate();
+  fuji_write_appkey((uint8_t)key_id, len, (uint8_t *)strbuf);
+  fujinet_deactivate();
+}
+
+// ============================================================
 // Hash commands
 // ============================================================
 
@@ -763,53 +907,51 @@ void basic_fhashadd(void) {
   cmd_expect(')');
   uint16_t len = (uint16_t)strlen(strbuf);
   fujinet_activate();
-  fuji_hash_add((uint8_t*)strbuf, len);
+  fuji_hash_add((uint8_t *)strbuf, len);
   fujinet_deactivate();
 }
 
 // CALL FHASHCALC(type, hex, discard, result$)
+//   Compute hash of accumulated data. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
+//   hex: 1=hex string (recommended), 0=binary. discard: 1=free data after.
 void basic_fhashcalc(void) {
   cmd_expect('(');
-  int type = cmd_get_int();
+  int type    = cmd_get_int();
   cmd_expect(',');
-  int as_hex = cmd_get_int();
+  int as_hex  = cmd_get_int();
   cmd_expect(',');
   int discard = cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-
   memset(buf2, 0, sizeof(buf2));
   fujinet_activate();
-  fuji_hash_calculate((hash_alg_t)type, (bool)as_hex, (bool)discard, (uint8_t*)buf2);
+  fuji_hash_calculate((hash_alg_t)type, (bool)as_hex, (bool)discard, (uint8_t *)buf2);
   fujinet_deactivate();
-
   if (!as_hex && type >= 0 && type < 4)
     buf2[hash_bin_sizes[type]] = '\0';
-
   cmd_set_string(buf2);
 }
 
 // CALL FHASHDATA(type, data$, hex, result$)
+//   Single-shot hash of data$. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
+//   hex: 1=hex string (recommended), 0=binary.
 void basic_fhashdata(void) {
   cmd_expect('(');
   int type = cmd_get_int();
   cmd_expect(',');
   cmd_get_string();                          // data$ -> strbuf
-  uint16_t len = (uint16_t)strlen(strbuf);  // measure before strbuf is reused
+  uint16_t len = (uint16_t)strlen(strbuf);
   cmd_expect(',');
   int as_hex = cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-
   memset(buf2, 0, sizeof(buf2));
   fujinet_activate();
-  fuji_hash_data((hash_alg_t)type, (uint8_t*)strbuf, len, (bool)as_hex, (uint8_t*)buf2);
+  fuji_hash_data((hash_alg_t)type, (uint8_t *)strbuf, len, (bool)as_hex, (uint8_t *)buf2);
   fujinet_deactivate();
-
   if (!as_hex && type >= 0 && type < 4)
     buf2[hash_bin_sizes[type]] = '\0';
-
   cmd_set_string(buf2);
 }
