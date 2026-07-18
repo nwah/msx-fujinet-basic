@@ -54,11 +54,17 @@ extern void fujinet_activate(void);
 // variables may live in page 2 (0x8000-0xBFFF) which the cartridge occupies.
 extern void fujinet_deactivate(void);
 
+// Install the boot-time version banner hook. Call once from INIT; see the
+// comment above install_boot_banner_hook in basic.asm for why this isn't
+// just a direct print.
+extern void install_boot_banner_hook(void);
+
 // ---------------------------------------------------------------------------
 // Command handlers (dispatched by call_handler in basic.asm). Each handler
 // parses its own arguments via the primitives above.
 // ---------------------------------------------------------------------------
 extern void basic_fujinet(void);
+extern void basic_fujinet_boot(void);
 extern void basic_fnconfig(void);
 extern bool basic_fngetdevice(void);
 extern int  basic_nopen(void);

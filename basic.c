@@ -30,6 +30,13 @@ void basic_fujinet(void) {
   cputs("FujiNet BASIC v" FUJINET_BASIC_VERSION "\r\n");
 }
 
+// Printed automatically at boot via the H.READ hook (see
+// install_boot_banner_hook in basic.asm). Needs a leading CRLF since it
+// lands right after BASIC's "Bytes free" line, on the same line.
+void basic_fujinet_boot(void) {
+  cputs("\r\nFujiNet BASIC v" FUJINET_BASIC_VERSION "\r\n");
+}
+
 // CALL FNCONFIG
 void basic_fnconfig(void) {
   fujinet_activate();

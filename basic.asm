@@ -22,6 +22,7 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
 
         ; C command handlers (one per BASIC command)
         extern _basic_fujinet
+        extern _basic_fujinet_boot
         extern _basic_fnconfig
         extern _basic_fngetdevice
         extern _basic_nopen
@@ -126,6 +127,7 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         public _cmd_set_int
         public _fujinet_activate
         public _fujinet_deactivate
+        public _install_boot_banner_hook
 
         public call_handler
 
@@ -345,6 +347,74 @@ _fujinet_activate:
 _fujinet_deactivate:
         ld      a,(_saved_slot)
         out     (0A8h),a
+        ret
+
+; void install_boot_banner_hook(void)
+; Patch the H.READ system hook (RAM hook table entry at 0xFF07) so the
+; version banner prints once, right between BASIC's "nnnnn Bytes free" line
+; and its "Ok" prompt - the same spot real disk BASIC ROMs print their
+; banner. H.READ is called by BASIC's own cold-start every time it returns
+; to the command loop (so also after every subsequent command), which is
+; too often; the hook self-clears back to a plain RET the first time it
+; runs so the banner only ever appears once.
+;
+; Printing directly from our own INIT is too early: INIT runs before
+; BASIC's cold-start clears the screen and prints its own banner, so
+; anything printed there gets wiped before the user ever sees it.
+;
+; By the time H.READ fires, page 1 (0x4000-0x7FFF) has been switched away
+; from our cartridge's slot back to BASIC's own RAM - confirmed by tracing
+; this in an emulator debugger, since a plain "JP our_code" hook here
+; crashes (it jumps to the right *address*, but that address now belongs
+; to whatever's mapped into page 1 at the time, not our ROM). So the hook
+; itself must be a CALLF (RST 30h) - same 5-byte "F7,slot,addrlo,addrhi,C9"
+; encoding used by real disk ROMs for their own self-hooks - which pages
+; our slot in, calls us, and restores the caller's mapping before the
+; trailing RET. The slot byte is read from our own primary-slot config at
+; INIT time (page 1 is guaranteed to be us then), matching how
+; fujinet_activate reads/restores port 0xA8 elsewhere in this file. This
+; assumes a simple, non-expanded slot, which every real cartridge edge
+; connector is in practice.
+HREAD   equ     0FF07h
+
+_install_boot_banner_hook:
+        ld      hl,_boot_hook_template
+        ld      de,HREAD
+        ld      bc,5
+        ldir                        ; F7 00 <entry-lo> <entry-hi> C9
+        in      a,(0A8h)
+        rrca                        ; page-1 slot bits (3-2) down to bits 1-0
+        rrca
+        and     03h
+        ld      (HREAD+1),a         ; patch the slot byte, now that it's in RAM
+        ret
+
+_boot_hook_template:
+        defb    0F7h                ; RST 30 (CALLF)
+        defb    0                   ; slot byte placeholder, patched above
+        defw    _boot_hook_entry
+        defb    0C9h                ; RET - CALLF returns here, completing the hook
+
+_boot_hook_entry:
+        push    af
+        push    bc
+        push    de
+        push    hl
+        push    ix
+        push    iy
+        ld      hl,HREAD            ; self-clear: restore the default 5-byte
+        ld      b,5                 ; RET hook so this only ever fires once
+_clear_hread:
+        ld      (hl),0C9h
+        inc     hl
+        djnz    _clear_hread
+        call    _basic_fujinet_boot
+        pop     iy
+        pop     ix
+        pop     hl
+        pop     de
+        pop     bc
+        pop     af
         ret
 
 ;======================================================================

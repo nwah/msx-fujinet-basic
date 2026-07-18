@@ -26,7 +26,7 @@ Requires z88dk and the `fujinet-lib` prebuilt library under `_cache/`.
 
 | Command | Description |
 |---|---|
-| `CALL FUJINET` | Print version banner (`FujiNet BASIC vX.Y.Z`). |
+| `CALL FUJINET` | Print version banner (`FujiNet BASIC vX.Y.Z`). Also printed automatically once at startup, right after BASIC's "Bytes free" line and before the `Ok` prompt - the same spot real disk BASIC ROMs print their banner. |
 | `CALL FNCONFIG` | Print adapter config: SSID, IP, MAC, firmware version, etc. |
 | `CALL FNGETDEVICE(slot, name$)` | Read the mounted filename for device `slot` into `name$`. |
 
