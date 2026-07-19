@@ -109,6 +109,43 @@ Requires z88dk and the `fujinet-lib` prebuilt library under `_cache/`.
 
 ---
 
+## Files — the `N:` device
+
+FujiNet registers itself as an MSX-BASIC device named `N:`, so the standard file
+statements work against network paths directly:
+
+`LOAD` `SAVE` `RUN` `MERGE` `OPEN` `CLOSE` `PRINT#` `INPUT#` `LINE INPUT#` `INPUT$` `EOF`
+
+Sequential access only. `GET#`/`PUT#` raise an error, and `LOC`/`LOF`/`FPOS` return 0 —
+a network stream has no length or seekable position to report.
+
+Use `N:` (or `N1:`–`N8:` to pick a network unit) where a filename would normally go.
+
+Because MSX-BASIC only ever hands a device an 8.3 filename — never the full string
+you typed — the scheme, host and directory come from `CALL NCD` instead of the
+filename itself.
+
+| Command | Description |
+|---|---|
+| `CALL NCD(path$)` | Set the path that `N:` filenames hang off. Max 63 characters. |
+
+### Example
+
+```basic
+CALL NCD("TNFS://myserver.local/BAS/")
+SAVE "N:HELLO.BAS"
+NEW
+LOAD "N:HELLO.BAS"
+RUN
+```
+
+`SAVE "N:HELLO.BAS"` above resolves to `N1:TNFS://myserver.local/BAS/HELLO.BAS`.
+
+Files are read and written as ASCII, terminated with Ctrl-Z (`&H1A`) the same way
+MSX disk BASIC writes them, so programs saved here load back on any MSX.
+
+---
+
 ## WiFi
 
 | Command | Description |
