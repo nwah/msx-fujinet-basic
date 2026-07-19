@@ -23,7 +23,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.2.1"
+#define FUJINET_BASIC_VERSION "0.2.2"
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -1033,6 +1033,8 @@ static uint16_t      ndev_pos;        // next byte to hand to BASIC (read side)
 static unsigned char ndev_ateof;
 static unsigned char ndev_mode;
 static unsigned char ndev_backchar;   // pushed-back byte, 0 = none
+static unsigned char ndev_ascii;      // input is text, so translate line endings
+static unsigned char ndev_lastcr;     // last byte handed over was a CR
 
 // The I/O channel control block BASIC passed in HL.
 static unsigned char *ndev_chan(void) {
@@ -1146,6 +1148,8 @@ void ndev_open(void) {
   ndev_pos      = 0;
   ndev_ateof    = 0;
   ndev_backchar = 0;
+  ndev_ascii    = 0;
+  ndev_lastcr   = 0;
 
   chan[FL_MOD] = mode;
   chan[FL_LSA] = 0;                   // no backup character pending
@@ -1162,6 +1166,8 @@ void ndev_open(void) {
     ndev_refill();
     if (ndev_len && ndev_buf[0] == 0xFF)
       chan[FL_FLG] = 0x80;            // 0FFH lead byte = tokenized BASIC
+    else
+      ndev_ascii = 1;                 // text: normalise line endings on the way in
   }
 
   MSX_PTRFIL = chan;                  // this is what tells BASIC the file is open
@@ -1187,6 +1193,8 @@ void ndev_close(void) {
   ndev_pos      = 0;
   ndev_ateof    = 0;
   ndev_backchar = 0;
+  ndev_ascii    = 0;
+  ndev_lastcr   = 0;
 }
 
 // A = 4: random access. Not meaningful for a stream.
@@ -1217,31 +1225,56 @@ void ndev_input(void) {
     return;
   }
 
-  if (ndev_pos >= ndev_len) {
-    if (ndev_ateof) {
-      dev_regs.carry = 1;
-      return;
-    }
-    ndev_refill();
-    if (ndev_len == 0) {
-      dev_regs.carry = 1;
-      return;
-    }
-  }
+  for (;;) {
+    unsigned char c;
 
-  // Ctrl-Z ends a text stream: report end of file rather than handing the
-  // marker over. DSKCHI, which reads program lines during LOAD, has no test
-  // for 1AH at all - it stops only on CR or on carry - so a device that
-  // returns the marker as data produces a spurious trailing line and breaks
-  // the load. This is the same rule EOF() above uses.
-  if (ndev_buf[ndev_pos] == 0x1A) {
-    ndev_ateof = 1;
-    dev_regs.carry = 1;
+    if (ndev_pos >= ndev_len) {
+      if (ndev_ateof) {
+        dev_regs.carry = 1;
+        return;
+      }
+      ndev_refill();
+      if (ndev_len == 0) {
+        dev_regs.carry = 1;
+        return;
+      }
+    }
+
+    // Ctrl-Z ends a text stream: report end of file rather than handing the
+    // marker over. DSKCHI, which reads program lines during LOAD, has no test
+    // for 1AH at all - it stops only on CR or on carry - so a device that
+    // returns the marker as data produces a spurious trailing line and breaks
+    // the load. This is the same rule EOF() above uses.
+    if (ndev_buf[ndev_pos] == 0x1A) {
+      ndev_ateof = 1;
+      dev_regs.carry = 1;
+      return;
+    }
+
+    c = ndev_buf[ndev_pos++];
+
+    // BASIC ends a program line at CR and nothing else, so a text file using
+    // bare LFs (anything written on a modern machine) never terminates a line
+    // at all: BASIC keeps appending to BUF, a 258-byte buffer, and a file any
+    // longer than that runs off the end of it into TXTTAB and VARTAB just
+    // above - which looks like a stray "Overflow" and a program that has
+    // vanished. So fold every convention down to the CR that BASIC wants:
+    // a lone LF becomes CR, and the LF of a CRLF pair is dropped.
+    if (ndev_ascii) {
+      if (c == 0x0A) {
+        if (ndev_lastcr) {            // second half of CRLF, already reported
+          ndev_lastcr = 0;
+          continue;
+        }
+        c = 0x0D;
+      }
+      ndev_lastcr = (c == 0x0D);
+    }
+
+    dev_regs.a = c;
+    dev_regs.carry = 0;
     return;
   }
-
-  dev_regs.a = ndev_buf[ndev_pos++];
-  dev_regs.carry = 0;
 }
 
 // A = 10/12/16: LOC(), LOF(), FPOS(). A network stream has no length or
