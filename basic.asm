@@ -109,7 +109,7 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         extern _basic_fhashadd
         extern _basic_fhashcalc
         extern _basic_fhashdata
-        extern _basic_nprefix
+        extern _basic_ncd
 
 
         ; Expanded-device ("N:") handlers, one per BASIC device request
@@ -301,8 +301,8 @@ command_list:
         defb "FHASHDATA",0
         defw _basic_fhashdata
         ; Expanded device
-        defb "NPREFIX",0
-        defw _basic_nprefix
+        defb "NCD",0
+        defw _basic_ncd
 
         defb 0
 

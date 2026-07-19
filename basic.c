@@ -1019,7 +1019,7 @@ void basic_fhashdata(void) {
 #define NDEV_POLL_TRIES 200
 
 unsigned char ndev_unit = 1;          // set by the name check in basic.asm
-char ndev_prefix[64];                 // set by CALL NPREFIX
+char ndev_prefix[64];                 // set by CALL NCD
 
 struct dev_regs_t dev_regs;
 
@@ -1041,7 +1041,7 @@ static unsigned char *ndev_chan(void) {
 
 // Build the devicespec from the unit, the prefix, and BASIC's 8.3 FILNAM.
 // BASIC only ever gives a device an 8.3 name, so the scheme/host/path has to
-// come from the prefix - that is what CALL NPREFIX is for.
+// come from the prefix - that is what CALL NCD is for.
 static void ndev_make_spec(void) {
   const char *f = MSX_FILNAM;
   char *p = ndev_spec;
@@ -1293,13 +1293,13 @@ void ndev_backup(void) {
   ndev_backchar = dev_regs.c;
 }
 
-// CALL NPREFIX(path$)
+// CALL NCD(path$)
 //   Sets the path that "N:" filenames hang off, e.g.
-//     CALL NPREFIX("TNFS://HOST/BAS/")
+//     CALL NCD("TNFS://HOST/BAS/")
 //     SAVE "N:PROG.BAS"      -> N1:TNFS://HOST/BAS/PROG.BAS
 //   Needed because BASIC hands a device only an 8.3 filename, never the
 //   whole string the user typed, so a full URL cannot arrive that way.
-void basic_nprefix(void) {
+void basic_ncd(void) {
   char *p;
 
   cmd_expect('(');

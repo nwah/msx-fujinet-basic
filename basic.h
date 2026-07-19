@@ -153,7 +153,7 @@ extern void basic_fhashclear(void);
 extern void basic_fhashadd(void);
 extern void basic_fhashcalc(void);
 extern void basic_fhashdata(void);
-extern void basic_nprefix(void);
+extern void basic_ncd(void);
 
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ extern struct dev_regs_t dev_regs;
 extern unsigned char ndev_unit;
 
 // Path prepended to the 8.3 filename to form the devicespec. Set by
-// CALL NPREFIX; see basic_nprefix in basic.c for why it is needed.
+// CALL NCD; see basic_ncd in basic.c for why it is needed.
 extern char ndev_prefix[];
 
 extern void ndev_open(void);
