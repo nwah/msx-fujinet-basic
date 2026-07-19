@@ -44,6 +44,10 @@ extern char cmd_get_var(void);
 extern void cmd_set_string(const char *s) __z88dk_fastcall;
 extern void cmd_set_int(int value) __z88dk_fastcall;
 
+// Raise a BASIC error; does not return. Uses the interpreter's own numbering
+// (19 = "Device I/O error", 2 = "Syntax error", 13 = "Type mismatch").
+extern void cmd_error(unsigned char code) __z88dk_fastcall;
+
 // Page in the FujiNet cartridge. Call this only from handlers that actually
 // communicate with the device; it switches memory slots, so pure-software
 // commands must not use it.
@@ -149,6 +153,49 @@ extern void basic_fhashclear(void);
 extern void basic_fhashadd(void);
 extern void basic_fhashcalc(void);
 extern void basic_fhashdata(void);
+extern void basic_nprefix(void);
 
+
+// ---------------------------------------------------------------------------
+// Expanded device ("N:") handlers, dispatched by device_handler in basic.asm
+// when BASIC performs I/O on a file whose device name we claimed. See the
+// comment above device_handler for the protocol, and the ndev_* block in
+// basic.c for what each request means.
+// ---------------------------------------------------------------------------
+
+// The caller's registers, spilled on entry and reloaded on exit. Handlers read
+// their arguments from here and write results back into it. Field order must
+// stay in sync with the stores in device_handler.
+//
+// `carry` is the flag BASIC reads back: sequential input sets it to 1 to mean
+// "end of file", which is how the interpreter raises "Input past end" itself.
+struct dev_regs_t {
+  unsigned char a;
+  unsigned char carry;
+  unsigned char c, b;
+  unsigned char e, d;
+  unsigned char l, h;
+  unsigned char err;   // nonzero: raise this BASIC error instead of returning
+};
+extern struct dev_regs_t dev_regs;
+
+// Network unit (1-8) taken from the device name at the time BASIC asked us
+// whether we handle it: "N:" and "N1:" are unit 1, "N2:" unit 2, and so on.
+extern unsigned char ndev_unit;
+
+// Path prepended to the 8.3 filename to form the devicespec. Set by
+// CALL NPREFIX; see basic_nprefix in basic.c for why it is needed.
+extern char ndev_prefix[];
+
+extern void ndev_open(void);
+extern void ndev_close(void);
+extern void ndev_random(void);
+extern void ndev_output(void);
+extern void ndev_input(void);
+extern void ndev_loc(void);
+extern void ndev_lof(void);
+extern void ndev_eof(void);
+extern void ndev_fpos(void);
+extern void ndev_backup(void);
 
 #endif // BASIC_H
