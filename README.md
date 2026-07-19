@@ -8,7 +8,14 @@ MSX-BASIC extension commands for the [FujiNet](https://fujinet.online) device, c
 make
 ```
 
-Requires z88dk and the `fujinet-lib` prebuilt library under `_cache/`.
+Requires z88dk and the `fujinet-lib` prebuilt library under `_cache/`. The build produces a
+padded 16K `fujinet-basic.rom`.
+
+### Memory
+
+The cartridge keeps its work buffers in RAM at `0xD800`, and lowers `HIMEM` to that address at
+boot so BASIC will not allocate over them. This costs roughly 6.5K of the memory BASIC would
+otherwise report as free.
 
 ## Conventions
 
@@ -127,7 +134,7 @@ filename itself.
 
 | Command | Description |
 |---|---|
-| `CALL NCD(path$)` | Set the path that `N:` filenames hang off. Max 63 characters. |
+| `CALL NCD(path$)` | Set the path that `N:` filenames hang off. Max 191 characters. |
 
 ### Example
 

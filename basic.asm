@@ -21,6 +21,7 @@ STRINI  equ 0x6627      ; allocate string space (A = length) -> DSCTMP
 VALTYP  equ 0xF663
 SUBFLG  equ 0xF6A5      ; 0 = simple variable / array element
 DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
+HIMEM   equ 0xFC4A      ; top of the RAM BASIC may allocate from
 
         ; C command handlers (one per BASIC command)
         extern _basic_fujinet
@@ -149,6 +150,16 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
 
         public call_handler
         public device_handler
+        public rom_init
+
+        ; Startup: linker-generated bounds of the RAM sections, used by
+        ; rom_init to do what the crt's own startup code would have done.
+        extern _main
+        extern __BSS_head
+        extern __BSS_END_tail
+        extern __DATA_head
+        extern __DATA_END_tail
+        extern __ROMABLE_END_tail
 
 ;======================================================================
 ; Command table: name (NUL-terminated) followed by C handler address.
@@ -305,6 +316,57 @@ command_list:
         defw _basic_ncd
 
         defb 0
+
+;----------------------------------------------------------------------
+; rom_init: the cartridge INIT entry point, called by the BIOS slot scan at
+; boot. The ROM header points here rather than straight at _main because the
+; C runtime needs two things done first that z88dk's own startup code (the
+; "start" label in the crt) would normally do - and that code never runs,
+; since a cartridge is entered through the header, not through the crt.
+;
+;   1. Clear BSS and copy initialized data from ROM into RAM. Without it
+;      every C global starts as whatever happened to be in RAM at power-on
+;      (ndev_prefix garbage, ndev_unit not 1, ...). Emulators tend to hand
+;      out zeroed RAM, so this only bites on real hardware. The crt does
+;      this in crt0_init, which is a local symbol we cannot call, so the
+;      two loops are repeated here.
+;
+;   2. Reserve our RAM from BASIC by lowering HIMEM to the base of BSS.
+;      BASIC grows its variables and strings up towards HIMEM, so without
+;      this it will happily allocate straight over our buffers once a
+;      program gets big enough.
+;
+; BSS is linked at CRT_ORG_BSS (see the Makefile), which has to satisfy two
+; constraints: it must be at or above 0xC000, because page 2 is where the
+; FujiNet cartridge gets paged in, and it must end low enough to clear the
+; work area a disk ROM may already have reserved at the top of RAM before
+; our INIT ran. Hence the value in the Makefile rather than the 0xC000
+; default, and the "only ever lower it" check below.
+rom_init:
+        xor     a                   ; clear BSS
+        ld      hl,__BSS_head
+        ld      de,__BSS_head + 1
+        ld      bc,__BSS_END_tail - __BSS_head - 1
+        ld      (hl),a
+        ldir
+
+        ld      bc,__DATA_END_tail - __DATA_head
+        ld      a,b                 ; an empty data section would make the
+        or      c                   ; LDIR below copy 64K, so skip it
+        jr      z,_ri_himem
+        ld      hl,__ROMABLE_END_tail   ; ROM image of the data section
+        ld      de,__DATA_head
+        ldir
+
+_ri_himem:
+        ld      hl,(HIMEM)
+        ld      de,__BSS_head
+        or      a
+        sbc     hl,de               ; CY set if HIMEM is already below our BSS
+        jr      c,_ri_main          ; someone reserved lower down - leave it
+        ld      (HIMEM),de
+_ri_main:
+        jp      _main               ; install the boot banner hook, then RET
 
 ;----------------------------------------------------------------------
 ; call_handler: invoked by the BASIC expansion-statement hook.

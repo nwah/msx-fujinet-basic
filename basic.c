@@ -23,7 +23,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.2.0"
+#define FUJINET_BASIC_VERSION "0.2.1"
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -1019,14 +1019,14 @@ void basic_fhashdata(void) {
 #define NDEV_POLL_TRIES 200
 
 unsigned char ndev_unit = 1;          // set by the name check in basic.asm
-char ndev_prefix[64];                 // set by CALL NCD
+char ndev_prefix[192];                // set by CALL NCD
 
 struct dev_regs_t dev_regs;
 
 // One open "N:" file at a time. BASIC would allow several (MAXFILES), but the
 // channel block is only guaranteed big enough for its own bookkeeping, so the
 // buffering state lives here rather than inside the block.
-static char          ndev_spec[96];   // "N1:" + prefix + filename
+static char          ndev_spec[224];  // "N1:" + prefix + filename
 static unsigned char ndev_buf[128];   // read-ahead / write-behind buffer
 static uint16_t      ndev_len;        // bytes valid in ndev_buf
 static uint16_t      ndev_pos;        // next byte to hand to BASIC (read side)
