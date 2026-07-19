@@ -7,6 +7,8 @@
 ; parsing and all - be written entirely in C.
 
 PROCNM  equ 0xFD89
+DEVICE  equ 0xFD99      ; device id (0-3) BASIC is currently talking to
+PTRFIL  equ 0xF864      ; active I/O channel, 0 = keyboard/screen
 CALBAS  equ 0x0159
 ERRHAND equ 0x406F
 FRMEVL  equ 0x4C64
@@ -107,7 +109,20 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         extern _basic_fhashadd
         extern _basic_fhashcalc
         extern _basic_fhashdata
+        extern _basic_ncd
 
+
+        ; Expanded-device ("N:") handlers, one per BASIC device request
+        extern _ndev_open
+        extern _ndev_close
+        extern _ndev_random
+        extern _ndev_output
+        extern _ndev_input
+        extern _ndev_loc
+        extern _ndev_lof
+        extern _ndev_eof
+        extern _ndev_fpos
+        extern _ndev_backup
 
         ; RAM scratch defined in C (so the ROM crt places it in RAM)
         extern _txtptr
@@ -115,6 +130,8 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         extern _varptr
         extern _vartype
         extern _saved_slot
+        extern _dev_regs
+        extern _ndev_unit
 
         ; Parsing primitives exported to C
         public _cmd_expect
@@ -125,11 +142,13 @@ DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
         public _cmd_get_var
         public _cmd_set_string
         public _cmd_set_int
+        public _cmd_error
         public _fujinet_activate
         public _fujinet_deactivate
         public _install_boot_banner_hook
 
         public call_handler
+        public device_handler
 
 ;======================================================================
 ; Command table: name (NUL-terminated) followed by C handler address.
@@ -281,6 +300,9 @@ command_list:
         defw _basic_fhashcalc
         defb "FHASHDATA",0
         defw _basic_fhashdata
+        ; Expanded device
+        defb "NCD",0
+        defw _basic_ncd
 
         defb 0
 
@@ -327,6 +349,178 @@ _tonextcmd:
 
 _call_hl:
         jp      (hl)
+
+;======================================================================
+; Expanded device ("N:") support.
+;
+; MSX-BASIC resolves the device part of a filename - the text before the
+; ':' in LOAD "N:...", OPEN "N:..." etc - by first trying its own built-in
+; devices (CAS:, CRT:, LPT:, GRP:, MEM:, and disk drive letters). If none
+; match, it upper-cases the name into PROCNM, sets A=0FFh, and calls the
+; DEVICE entry (offset 6) of every cartridge header that has a non-zero
+; one, lowest slot first. We claim the name here and BASIC then routes all
+; I/O on that file back through this same entry.
+;
+; Two distinct calls arrive at device_handler:
+;
+;   A = 0FFh  "do you handle the device named in PROCNM?"
+;             -> A = device id (0-3), CY clear   if yes
+;             -> CY set                          if not ours
+;
+;   A = 0..18 an I/O request on a file we claimed. DEVICE (0FD99h) holds
+;             the device id from the name check, so one cartridge can serve
+;             up to 4 device names. The codes are spaced by 2 because BASIC
+;             uses them as a byte offset into a table of JR instructions,
+;             which is exactly what dev_table below is.
+;
+; Register conventions per request code are NOT documented in the MSX2
+; Technical Handbook (it lists only the code meanings), so rather than
+; guess which register carries the data byte / result for each op, the
+; dispatcher spills AF/BC/DE/HL into _dev_regs before entering C and
+; reloads them afterwards. A handler reads its inputs and writes its
+; result through that struct; working out which field each op actually
+; uses is a per-op job for an emulator debugger. See ndev_* in basic.c.
+;----------------------------------------------------------------------
+device_handler:
+        cp      0FFh
+        jp      z,dev_name_check    ; out of JR range now
+
+;----------------------------------------------------------------------
+; I/O request: A = request code, DEVICE (0FD99h) = our device id.
+        cp      dev_table_end-dev_table
+        ret     nc                  ; code past the end of the table: ignore
+        ld      (_dev_regs+0),a     ; spill the caller's registers for C
+        ld      (_dev_regs+2),bc
+        ld      (_dev_regs+4),de
+        ld      (_dev_regs+6),hl
+        ld      e,a                 ; stash the table offset BEFORE clobbering A:
+        ld      d,0                 ; the request code doubles as the offset
+        xor     a
+        ld      (_dev_regs+1),a     ; default carry-out to clear for every request
+        ld      (_dev_regs+8),a     ; and "no error raised"
+        ld      hl,dev_table
+        add     hl,de
+        jp      (hl)
+
+dev_table:
+        jr      dev_open            ; 0  OPEN
+        jr      dev_close           ; 2  CLOSE
+        jr      dev_random          ; 4  random access
+        jr      dev_output          ; 6  sequential output
+        jr      dev_input           ; 8  sequential input
+        jr      dev_loc             ; 10 LOC()
+        jr      dev_lof             ; 12 LOF()
+        jr      dev_eof             ; 14 EOF()
+        jr      dev_fpos            ; 16 FPOS()
+        jr      dev_backup          ; 18 backup character
+dev_table_end:
+
+dev_open:
+        ld      hl,_ndev_open
+        jr      dev_call
+dev_close:
+        ld      hl,_ndev_close
+        jr      dev_call
+dev_random:
+        ld      hl,_ndev_random
+        jr      dev_call
+dev_output:
+        ld      hl,_ndev_output
+        jr      dev_call
+dev_input:
+        ld      hl,_ndev_input
+        jr      dev_call
+dev_loc:
+        ld      hl,_ndev_loc
+        jr      dev_call
+dev_lof:
+        ld      hl,_ndev_lof
+        jr      dev_call
+dev_eof:
+        ld      hl,_ndev_eof
+        jr      dev_call
+dev_fpos:
+        ld      hl,_ndev_fpos
+        jr      dev_call
+dev_backup:
+        ld      hl,_ndev_backup
+        ; fall through
+
+; Enter the C handler in HL, then hand the (possibly updated) _dev_regs
+; back to BASIC in real registers.
+dev_call:
+        push    ix
+        push    iy
+        call    _call_hl
+        pop     iy
+        pop     ix
+        ld      a,(_dev_regs+8)     ; handler asked us to fail the operation?
+        and     a
+        jr      nz,dev_raise
+        ld      bc,(_dev_regs+2)
+        ld      de,(_dev_regs+4)
+        ld      hl,(_dev_regs+6)
+        ld      a,(_dev_regs+1)     ; carry-out byte (sequential input: 1 = EOF)
+        rrca                        ; bit 0 -> CY; only RRCA touches the flags,
+        ld      a,(_dev_regs+0)     ; and the LDs below/above leave them alone
+        ret
+
+;----------------------------------------------------------------------
+; Raise a BASIC error on a handler's behalf.
+;
+; A handler must NOT call cmd_error itself: it would longjmp out of a live
+; C frame in the middle of dispatch, and since the compiler cannot know the
+; call never returns, the handler would carry on and report success on a
+; channel that was never opened - BASIC then retries and the error repeats
+; forever. Instead a handler stores the code in dev_regs.err and returns
+; normally, and we raise it here with the C frame already unwound.
+;
+; PTRFIL is cleared first. BASIC's error routine prints through PTRFIL, so
+; leaving our own dying channel installed would route the error message
+; straight back into the device it is complaining about.
+dev_raise:
+        ld      e,a                 ; E = BASIC error code
+        ld      hl,0
+        ld      (PTRFIL),hl         ; detach the channel before BASIC prints
+        ld      ix,ERRHAND
+        jp      CALBAS
+
+;----------------------------------------------------------------------
+; Name check: accept "N" (unit 1) and "N1".."N8", mirroring how the MSX
+; serial ROM claims COM0..COM9 from a single device id. The unit digit is
+; stashed in _ndev_unit for the OPEN that follows, so all eight units share
+; device id 0 - BASIC allows only 4 ids per cartridge, not enough to give
+; each unit one of its own.
+dev_name_check:
+        ld      hl,PROCNM
+        ld      a,(hl)
+        cp      04Eh                ; 'N'
+        jr      nz,dev_not_ours
+        inc     hl
+        ld      a,(hl)
+        and     a                   ; bare "N:"?
+        jr      z,dev_unit_default
+        sub     031h                ; '1'
+        jr      c,dev_not_ours      ; not a digit in 1-8
+        cp      8
+        jr      nc,dev_not_ours
+        inc     a                   ; A = unit 1-8
+        ld      c,a
+        inc     hl
+        ld      a,(hl)
+        and     a                   ; the digit must end the name
+        jr      nz,dev_not_ours
+        ld      a,c
+        jr      dev_unit_set
+dev_unit_default:
+        ld      a,1                 ; bare "N:" means unit 1
+dev_unit_set:
+        ld      (_ndev_unit),a
+        xor     a                   ; device id 0, CY clear = ours
+        ret
+dev_not_ours:
+        scf
+        ret
 
 ; void fujinet_activate(void)
 ; Page in the FujiNet cartridge. Saves the current primary-slot register so
@@ -610,6 +804,17 @@ _cmd_set_int:
 ;======================================================================
 ; Error exits
 ;======================================================================
+
+;----------------------------------------------------------------------
+; void cmd_error(char code)   __z88dk_fastcall  (code in L)
+; Raise a BASIC error and do NOT return - ERRHAND longjmps back into the
+; interpreter. Codes are the interpreter's own numbering, e.g. 19 =
+; "Device I/O error", 2 = "Syntax error", 13 = "Type mismatch".
+_cmd_error:
+        ld      e,l
+        ld      ix,ERRHAND
+        jp      CALBAS
+
 _type_mismatch:
         ld      e,13
         db      1                   ; "LD BC,nn" swallows the next "LD E,2"

@@ -23,7 +23,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.1.1"
+#define FUJINET_BASIC_VERSION "0.2.0"
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -961,4 +961,352 @@ void basic_fhashdata(void) {
   if (!as_hex && type >= 0 && type < 4)
     buf2[hash_bin_sizes[type]] = '\0';
   cmd_set_string(buf2);
+}
+
+// ---------------------------------------------------------------------------
+// Expanded device: "N:"
+//
+// BASIC resolves the device part of a filename (the text before the ':') by
+// trying its built-ins first; when none match it upper-cases the name into
+// PROCNM and offers it to each cartridge's DEVICE entry. We claim "N" and
+// "N1".."N8", after which every I/O request on that file comes back to
+// device_handler in basic.asm, which calls one of the ndev_* handlers here.
+//
+// BASIC expresses LOAD, SAVE, RUN, MERGE, OPEN, CLOSE, PRINT#, INPUT#,
+// LINE INPUT# and EOF()/LOC()/LOF() in terms of these primitives, so
+// implementing open/close/input/output/eof is enough to make
+//
+//     SAVE "N:PROG.BAS"        LOAD "N:PROG.BAS"        RUN "N:PROG.BAS"
+//
+// work. The disk-only statements (FILES, KILL, NAME, COPY) are served by a
+// disk ROM directly and never reach device expansion.
+//
+// Register conventions per request code are not in the official docs; they
+// were taken from the MSX system ROM sources (the MEM: device in subrom.mac
+// and the COM: device in serial.mac), which are the two reference
+// implementations of this interface.
+// ---------------------------------------------------------------------------
+
+// MSX BASIC work area. All of these live in page 3, which is always RAM, so
+// they stay readable while the FujiNet cartridge is paged into page 2.
+#define MSX_FILNAM ((const char *)0xF866)          // filename, 8+3, space padded
+#define MSX_PTRFIL (*(unsigned char **)0xF864)     // active I/O channel, 0 = none
+#define MSX_DAC    (*(int *)0xF7F8)                // DAC+2: integer function result
+#define MSX_VALTYP (*(unsigned char *)0xF663)      // type of that result, 2 = integer
+
+// Offsets into BASIC's I/O channel control block (the block HL points at).
+#define FL_MOD 0                                   // open mode
+#define FL_LSA 3                                   // backup character
+#define FL_BPS 6                                   // position in the channel's buffer
+#define FL_FLG 7                                   // channel flags; bit 7 = tokenized BASIC file
+
+// Open modes BASIC passes in E.
+#define FMODE_INPUT  1
+#define FMODE_OUTPUT 2
+#define FMODE_RANDOM 4
+#define FMODE_APPEND 8
+
+#define ERR_ILLEGAL_FUNCTION 5
+#define ERR_DEVICE_IO        19
+
+// The FujiNet ACCESS_MODE for append; fujinet-network.h has no constant for
+// it (see fileAccessMode_t in the firmware's network-protocol/Protocol.h).
+#define OPEN_MODE_APPEND 9
+
+// How many times to poll status for bytes before calling a read finished.
+// network_status also pumps the socket firmware-side, so polling is what
+// actually moves data, not just what observes it.
+#define NDEV_POLL_TRIES 200
+
+unsigned char ndev_unit = 1;          // set by the name check in basic.asm
+char ndev_prefix[64];                 // set by CALL NCD
+
+struct dev_regs_t dev_regs;
+
+// One open "N:" file at a time. BASIC would allow several (MAXFILES), but the
+// channel block is only guaranteed big enough for its own bookkeeping, so the
+// buffering state lives here rather than inside the block.
+static char          ndev_spec[96];   // "N1:" + prefix + filename
+static unsigned char ndev_buf[128];   // read-ahead / write-behind buffer
+static uint16_t      ndev_len;        // bytes valid in ndev_buf
+static uint16_t      ndev_pos;        // next byte to hand to BASIC (read side)
+static unsigned char ndev_ateof;
+static unsigned char ndev_mode;
+static unsigned char ndev_backchar;   // pushed-back byte, 0 = none
+
+// The I/O channel control block BASIC passed in HL.
+static unsigned char *ndev_chan(void) {
+  return (unsigned char *)(((unsigned int)dev_regs.h << 8) | dev_regs.l);
+}
+
+// Build the devicespec from the unit, the prefix, and BASIC's 8.3 FILNAM.
+// BASIC only ever gives a device an 8.3 name, so the scheme/host/path has to
+// come from the prefix - that is what CALL NCD is for.
+static void ndev_make_spec(void) {
+  const char *f = MSX_FILNAM;
+  char *p = ndev_spec;
+  unsigned char i;
+
+  *p++ = 'N';
+  *p++ = (char)('0' + ndev_unit);
+  *p++ = ':';
+  strcpy(p, ndev_prefix);
+  p += strlen(ndev_prefix);
+
+  for (i = 0; i < 8 && f[i] != ' '; i++)
+    *p++ = f[i];
+  if (f[8] != ' ') {
+    *p++ = '.';
+    for (i = 8; i < 11 && f[i] != ' '; i++)
+      *p++ = f[i];
+  }
+  *p = '\0';
+}
+
+// Refill the read buffer. Only ever asks for as many bytes as status reported
+// waiting: the firmware pads a longer read with stale buffer content.
+static void ndev_refill(void) {
+  uint16_t bw;
+  uint8_t conn, err;
+  int16_t got;
+  unsigned int tries;
+
+  ndev_pos = 0;
+  ndev_len = 0;
+
+  fujinet_activate();
+  for (tries = 0; tries < NDEV_POLL_TRIES; tries++) {
+    network_status(ndev_spec, &bw, &conn, &err);
+    if (bw) {
+      if (bw > sizeof(ndev_buf))
+        bw = sizeof(ndev_buf);
+      got = network_read(ndev_spec, ndev_buf, bw);
+      if (got > 0)
+        ndev_len = (uint16_t)got;
+      break;
+    }
+    // A closed connection can still have buffered bytes, so only trust these
+    // once status reports nothing waiting.
+    if (err == NETWORK_ERROR_END_OF_FILE || !conn)
+      break;
+  }
+  fujinet_deactivate();
+
+  if (ndev_len == 0)
+    ndev_ateof = 1;
+}
+
+// Push the write buffer to the device. A failure here means the file is being
+// silently truncated, so it is reported rather than swallowed.
+static void ndev_flush(void) {
+  uint8_t err;
+
+  if (ndev_len == 0)
+    return;
+  fujinet_activate();
+  err = network_write(ndev_spec, ndev_buf, ndev_len);
+  fujinet_deactivate();
+  ndev_len = 0;
+  if (err != FN_ERR_OK)
+    dev_regs.err = ERR_DEVICE_IO;
+}
+
+static void ndev_result(int value) {
+  MSX_DAC = value;
+  MSX_VALTYP = 2;                     // integer
+}
+
+// A = 0: OPEN. E = mode, HL = I/O channel control block.
+void ndev_open(void) {
+  unsigned char *chan = ndev_chan();
+  unsigned char mode = dev_regs.e;
+  uint8_t omode;
+  uint8_t err;
+
+  if (mode == FMODE_RANDOM) {         // stream device: sequential access only
+    dev_regs.err = ERR_DEVICE_IO;
+    return;
+  }
+
+  ndev_make_spec();
+  omode = (mode == FMODE_INPUT)  ? OPEN_MODE_READ
+        : (mode == FMODE_APPEND) ? OPEN_MODE_APPEND
+                                 : OPEN_MODE_WRITE;
+
+  fujinet_activate();
+  err = network_open(ndev_spec, omode, OPEN_TRANS_NONE);
+  fujinet_deactivate();
+  if (err != FN_ERR_OK) {
+    dev_regs.err = ERR_DEVICE_IO;     // dispatcher raises it once we return
+    return;                           // leave PTRFIL alone: the file is NOT open
+  }
+
+  ndev_mode     = mode;
+  ndev_len      = 0;
+  ndev_pos      = 0;
+  ndev_ateof    = 0;
+  ndev_backchar = 0;
+
+  chan[FL_MOD] = mode;
+  chan[FL_LSA] = 0;                   // no backup character pending
+  chan[FL_BPS] = 0;
+
+  // LOAD reads FL_FLG straight out of the block to decide whether it is
+  // loading a tokenized program (bit 7) or ASCII text, and nothing else
+  // initialises it: OPNFIL leaves it alone, and CLSFIL skips clearing it for
+  // channel 0 while a program load is in progress. So a stale bit 7 from an
+  // earlier SAVE would send LOAD down the binary path with a text file. Peek
+  // the first byte and set it properly.
+  chan[FL_FLG] = 0;
+  if (ndev_mode == FMODE_INPUT) {
+    ndev_refill();
+    if (ndev_len && ndev_buf[0] == 0xFF)
+      chan[FL_FLG] = 0x80;            // 0FFH lead byte = tokenized BASIC
+  }
+
+  MSX_PTRFIL = chan;                  // this is what tells BASIC the file is open
+}
+
+// A = 2: CLOSE. BASIC clears PTRFIL itself, so this only has to flush.
+void ndev_close(void) {
+  if (ndev_mode != FMODE_INPUT) {
+    // An ASCII BASIC file has to end with a Ctrl-Z; BASIC does not append it
+    // for a device, so we do, the same way the MSX serial ROM's COM: close does.
+    if (ndev_len >= sizeof(ndev_buf))
+      ndev_flush();
+    ndev_buf[ndev_len++] = 0x1A;
+    ndev_flush();
+  }
+
+  fujinet_activate();
+  network_close(ndev_spec);
+  fujinet_deactivate();
+
+  ndev_mode     = 0;
+  ndev_len      = 0;
+  ndev_pos      = 0;
+  ndev_ateof    = 0;
+  ndev_backchar = 0;
+}
+
+// A = 4: random access. Not meaningful for a stream.
+void ndev_random(void) {
+  dev_regs.err = ERR_DEVICE_IO;
+}
+
+// A = 6: sequential output - C holds the byte (PRINT#, SAVE).
+void ndev_output(void) {
+  ndev_buf[ndev_len++] = dev_regs.c;
+  if (ndev_len >= sizeof(ndev_buf))
+    ndev_flush();
+  dev_regs.carry = 0;
+}
+
+// A = 8: sequential input - return the byte in A (INPUT#, LOAD, RUN).
+// Carry set means end of file; BASIC turns that into "Input past end".
+void ndev_input(void) {
+  if (ndev_backchar) {                // a backed-up character is pending
+    if (ndev_backchar == 0x1A) {
+      ndev_ateof = 1;
+      dev_regs.carry = 1;
+      return;
+    }
+    dev_regs.a = ndev_backchar;
+    ndev_backchar = 0;
+    dev_regs.carry = 0;
+    return;
+  }
+
+  if (ndev_pos >= ndev_len) {
+    if (ndev_ateof) {
+      dev_regs.carry = 1;
+      return;
+    }
+    ndev_refill();
+    if (ndev_len == 0) {
+      dev_regs.carry = 1;
+      return;
+    }
+  }
+
+  // Ctrl-Z ends a text stream: report end of file rather than handing the
+  // marker over. DSKCHI, which reads program lines during LOAD, has no test
+  // for 1AH at all - it stops only on CR or on carry - so a device that
+  // returns the marker as data produces a spurious trailing line and breaks
+  // the load. This is the same rule EOF() above uses.
+  if (ndev_buf[ndev_pos] == 0x1A) {
+    ndev_ateof = 1;
+    dev_regs.carry = 1;
+    return;
+  }
+
+  dev_regs.a = ndev_buf[ndev_pos++];
+  dev_regs.carry = 0;
+}
+
+// A = 10/12/16: LOC(), LOF(), FPOS(). A network stream has no length or
+// seekable position to report, so these answer 0 rather than guess.
+void ndev_loc(void) {
+  ndev_result(0);
+}
+
+void ndev_lof(void) {
+  ndev_result(0);
+}
+
+void ndev_fpos(void) {
+  ndev_result(0);
+}
+
+// A = 14: EOF(). -1 at end of file, 0 otherwise, returned via DAC.
+//
+// For a stream device MSX defines end-of-file as "the next byte is the Ctrl-Z
+// marker", not "the stream has run dry" - the serial ROM's COM: EOF reads the
+// next character, compares it with 1AH and pushes it back. BASIC's LOAD relies
+// on this: if EOF only became true once the stream was exhausted, LOAD would
+// read straight past the terminator and overrun its line buffer. We own the
+// read buffer, so we can peek without the read-and-push-back dance.
+void ndev_eof(void) {
+  if (ndev_mode != FMODE_INPUT) {     // nothing to read ahead on an output file,
+    ndev_result(0);                   // and refilling would clobber the write buffer
+    return;
+  }
+
+  if (ndev_backchar) {                // a pushed-back byte is what comes next
+    ndev_result(ndev_backchar == 0x1A ? -1 : 0);
+    return;
+  }
+
+  if (ndev_pos >= ndev_len && !ndev_ateof)
+    ndev_refill();
+
+  if (ndev_pos >= ndev_len) {         // genuinely nothing left, marker or not
+    ndev_result(-1);
+    return;
+  }
+
+  ndev_result(ndev_buf[ndev_pos] == 0x1A ? -1 : 0);
+}
+
+// A = 18: backup character - C is pushed back for the next sequential input.
+void ndev_backup(void) {
+  ndev_backchar = dev_regs.c;
+}
+
+// CALL NCD(path$)
+//   Sets the path that "N:" filenames hang off, e.g.
+//     CALL NCD("TNFS://HOST/BAS/")
+//     SAVE "N:PROG.BAS"      -> N1:TNFS://HOST/BAS/PROG.BAS
+//   Needed because BASIC hands a device only an 8.3 filename, never the
+//   whole string the user typed, so a full URL cannot arrive that way.
+void basic_ncd(void) {
+  char *p;
+
+  cmd_expect('(');
+  p = cmd_get_string();
+  cmd_expect(')');
+
+  if (strlen(p) >= sizeof(ndev_prefix))
+    cmd_error(ERR_ILLEGAL_FUNCTION);
+  strcpy(ndev_prefix, p);
 }
