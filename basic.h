@@ -198,4 +198,27 @@ extern void ndev_eof(void);
 extern void ndev_fpos(void);
 extern void ndev_backup(void);
 
+// ---------------------------------------------------------------------------
+// Printer redirection (see the printer block in basic.c and basic.asm).
+//
+// Installed once at boot; from then on LPRINT, LLIST and PRINT# to an open
+// "LPT:" go to the FujiNet printer device instead of the Centronics port.
+// ---------------------------------------------------------------------------
+
+// Patch the H.LPTO / H.LPTS system hooks. Call from INIT only: it reads the
+// cartridge's own slot number, which is only meaningful while page 1 is us.
+extern void install_printer_hooks(void);
+
+// The character handed over by the H.LPTO stub, read by lpt_out.
+extern unsigned char lpt_char;
+
+// RAM home for the hook stubs; install_printer_hooks copies them here.
+extern unsigned char lpt_stub[];
+
+// Buffer one character of printer output; flushes on end of line or when full.
+extern void lpt_out(void);
+
+// Send buffered printer output to FujiNet now.
+extern void lpt_flush(void);
+
 #endif // BASIC_H

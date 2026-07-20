@@ -113,6 +113,12 @@ HIMEM   equ 0xFC4A      ; top of the RAM BASIC may allocate from
         extern _basic_ncd
 
 
+        ; Printer redirection
+        extern _basic_lptflush
+        extern _lpt_out
+        extern _lpt_char
+        extern _lpt_stub
+
         ; Expanded-device ("N:") handlers, one per BASIC device request
         extern _ndev_open
         extern _ndev_close
@@ -147,6 +153,7 @@ HIMEM   equ 0xFC4A      ; top of the RAM BASIC may allocate from
         public _fujinet_activate
         public _fujinet_deactivate
         public _install_boot_banner_hook
+        public _install_printer_hooks
 
         public call_handler
         public device_handler
@@ -314,6 +321,9 @@ command_list:
         ; Expanded device
         defb "NCD",0
         defw _basic_ncd
+        ; Printer
+        defb "LPTFLUSH",0
+        defw _basic_lptflush
 
         defb 0
 
@@ -672,6 +682,94 @@ _clear_hread:
         pop     bc
         pop     af
         ret
+
+;======================================================================
+; Printer redirection: LPRINT, LLIST, and PRINT# to an open "LPT:".
+;
+; All three funnel through the BIOS LPTOUT routine (00A5h), which sends one
+; character to the Centronics port, so hooking that one routine covers the
+; lot - there is nothing device-expansion-shaped to claim here, because
+; "LPT:" is one of BASIC's own built-in device names and never reaches a
+; cartridge's DEVICE entry the way "N:" does.
+;
+; LPTOUT calls H.LPTO (0FFB6h) as its very first instruction, before it has
+; pushed anything, so the word on top of the stack when the hook runs is
+; LPTOUT's own return address. Dropping it makes our RET go straight back to
+; LPTOUT's caller, and the rest of LPTOUT - the status poll and the OUT to
+; ports 91h/90h - never runs. That is what keeps the byte off the parallel
+; port instead of merely copying it. LPTOUT reports success with CY clear.
+;
+; LPTSTT (00A8h) is hooked the same way at H.LPTS (0FFBBh) and always answers
+; "ready" (A = 0FFh, NZ). Without it, any code that polls the printer before
+; printing would spin forever on a machine with nothing on the parallel port.
+;
+; Both stubs have to execute from RAM. A hook fires while page 1 belongs to
+; BASIC rather than to us, so a plain "JP our_rom_code" would land on whatever
+; is mapped there at the time - the same trap documented in the boot banner
+; hook above. The stubs are therefore copied into BSS at INIT and reach our
+; ROM through the same CALLF (RST 30h) encoding, with the slot byte patched
+; from our own primary-slot config while page 1 is still guaranteed to be us.
+HLPTO   equ     0FFB6h
+HLPTS   equ     0FFBBh
+
+_install_printer_hooks:
+        ld      hl,lpt_template     ; both stubs, copied as one block
+        ld      de,_lpt_stub
+        ld      bc,lpt_template_end-lpt_template
+        ldir
+        in      a,(0A8h)
+        rrca                        ; page-1 slot bits (3-2) down to bits 1-0
+        rrca
+        and     03h
+        ld      (_lpt_stub+lpt_slot-lpt_template),a
+
+        ld      a,0C3h              ; JP
+        ld      (HLPTO),a
+        ld      hl,_lpt_stub
+        ld      (HLPTO+1),hl
+        ld      (HLPTS),a
+        ld      hl,_lpt_stub+lpts_stub-lpt_template
+        ld      (HLPTS+1),hl
+        ret
+
+; The block copied into _lpt_stub. Keep _lpt_stub in basic.c at least
+; lpt_template_end-lpt_template bytes; the build fails loudly below if not.
+lpt_template:
+        ld      (_lpt_char),a       ; hand the byte over in RAM: whether CALLF
+                                    ; preserves A is not worth relying on
+        inc     sp                  ; drop LPTOUT's return address - the byte
+        inc     sp                  ; is ours, LPTOUT must not carry on
+        push    bc
+        push    de
+        push    hl
+        push    ix
+        push    iy
+        push    af
+        defb    0F7h                ; RST 30 (CALLF) - pages our slot in
+lpt_slot:
+        defb    0                   ; slot byte placeholder, patched above
+        defw    _lpt_out
+        pop     af
+        pop     iy
+        pop     ix
+        pop     hl
+        pop     de
+        pop     bc
+        or      a                   ; CY clear = character accepted
+        ret
+
+lpts_stub:
+        inc     sp                  ; same trick: LPTSTT must not poll the port
+        inc     sp
+        ld      a,0FFh              ; 0FFh + NZ = printer ready
+        and     a
+        ret
+lpt_template_end:
+
+LPT_STUB_SIZE equ 48                ; must match _lpt_stub in basic.c
+        IF (lpt_template_end-lpt_template) > LPT_STUB_SIZE
+        defc SHOULD_NOT_HAPPEN = "printer hook stubs outgrew _lpt_stub"
+        ENDIF
 
 ;======================================================================
 ; Parsing primitives (callable from C).
