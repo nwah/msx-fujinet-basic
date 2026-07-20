@@ -13,8 +13,8 @@ padded 16K `fujinet-basic.rom`.
 
 ### Memory
 
-The cartridge keeps its work buffers in RAM at `0xD800`, and lowers `HIMEM` to that address at
-boot so BASIC will not allocate over them. This costs roughly 6.5K of the memory BASIC would
+The cartridge keeps its work buffers in RAM at `0xD700`, and lowers `HIMEM` to that address at
+boot so BASIC will not allocate over them. This costs roughly 6.75K of the memory BASIC would
 otherwise report as free.
 
 ## Conventions
@@ -150,6 +150,44 @@ RUN
 
 Files are read and written as ASCII, terminated with Ctrl-Z (`&H1A`) the same way
 MSX disk BASIC writes them, so programs saved here load back on any MSX.
+
+---
+
+## Printer
+
+Printer output is redirected to the FujiNet printer device, so the standard
+MSX-BASIC printer statements print through FujiNet instead of the Centronics port:
+
+`LPRINT` `LPRINT USING` `LLIST` and `PRINT#` to a file opened on `LPT:`
+
+```basic
+LPRINT "HELLO FROM MSX"
+LLIST
+
+OPEN "LPT:" FOR OUTPUT AS #1
+PRINT #1,"HELLO FROM MSX"
+CLOSE #1
+```
+
+Whatever FujiNet's printer device is configured to emulate (PDF, HTML, an Epson,
+a plotter) is what the output turns into — the MSX just hands over the bytes.
+
+No setup is needed and nothing has to be enabled: the redirection is installed at
+boot. Because it replaces the BIOS printer routines outright, a real printer on
+the parallel port is not reachable while the cartridge is installed.
+
+Characters are batched and sent a chunk at a time rather than one per statement.
+A chunk is sent at the end of each line, on a form feed, and whenever 128
+characters have piled up, so ordinary `LPRINT` and `LLIST` output goes out as it
+is produced. Output deliberately held back with a trailing `;` has no line end to
+trigger on and stays buffered until the next line completes.
+
+| Command | Description |
+|---|---|
+| `CALL LPTFLUSH` | Send buffered printer output to FujiNet now. Only needed after printing that never ended a line, e.g. `LPRINT "X";`. |
+
+> **Note:** if no FujiNet is attached, a printer statement will block while the
+> device is waiting to be talked to, the same as any other FujiNet command here.
 
 ---
 

@@ -5,6 +5,7 @@
 #include <conio.h>
 #include "fujinet-fuji.h"
 #include "fujinet-network.h"
+#include "fujinet-bus.h"
 #include "basic.h"
 
 AdapterConfigExtended c;
@@ -23,7 +24,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.2.2"
+#define FUJINET_BASIC_VERSION "0.3.0"
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -1342,4 +1343,63 @@ void basic_ncd(void) {
   if (strlen(p) >= sizeof(ndev_prefix))
     cmd_error(ERR_ILLEGAL_FUNCTION);
   strcpy(ndev_prefix, p);
+}
+
+// ---------------------------------------------------------------------------
+// Printer: LPRINT, LLIST, and PRINT# to an open "LPT:"
+//
+// Unlike "N:", none of this arrives through device expansion - "LPT:" is one
+// of BASIC's own built-in device names, so a cartridge never gets offered it.
+// What every printer statement does have in common is the BIOS LPTOUT routine,
+// which they all call once per character, so that is what we intercept. See
+// the printer redirection block in basic.asm for how the hook suppresses the
+// real Centronics output; by the time lpt_out runs the byte is ours alone.
+//
+// Bytes are batched rather than sent one at a time: each FujiNet WRITE is a
+// full bus transaction, and the printer device treats one write as one chunk
+// of print data, so a per-character write would be both slow and needlessly
+// hard on the printer emulator. The buffer is pushed on end of line, on form
+// feed, and when it fills - enough that a finished LPRINT or LLIST always
+// lands. Output deliberately held back with a trailing ';' has no such
+// boundary and waits for CALL LPTFLUSH.
+// ---------------------------------------------------------------------------
+
+#define LPT_BUFSZ 128
+
+// Set by the H.LPTO stub immediately before it calls us.
+unsigned char lpt_char;
+
+// RAM home for the hook stubs, copied there by install_printer_hooks. Sized
+// by LPT_STUB_SIZE in basic.asm, which checks it is big enough at build time.
+unsigned char lpt_stub[48];
+
+static unsigned char lpt_buf[LPT_BUFSZ];
+static unsigned int  lpt_len;
+
+// Send whatever has accumulated to the FujiNet printer device. The firmware
+// interprets the data itself (form feeds, ESC sequences, the configured
+// printer emulation), so this hands the bytes over untouched.
+void lpt_flush(void) {
+  if (lpt_len == 0)
+    return;
+  fujinet_activate();
+  fuji_bus_write(FUJI_DEVICEID_PRINTER, lpt_buf, lpt_len);
+  fujinet_deactivate();
+  lpt_len = 0;
+}
+
+// One character from LPTOUT, via the H.LPTO stub.
+void lpt_out(void) {
+  unsigned char c = lpt_char;
+
+  lpt_buf[lpt_len++] = c;
+  if (lpt_len >= LPT_BUFSZ || c == 0x0A || c == 0x0C)
+    lpt_flush();
+}
+
+// CALL LPTFLUSH
+//   Push any buffered printer output to FujiNet now. Only needed for output
+//   that never ended a line, e.g. LPRINT "X";
+void basic_lptflush(void) {
+  lpt_flush();
 }
