@@ -24,7 +24,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.3.0"
+#define FUJINET_BASIC_VERSION "0.3.1"
 
 // CALL FUJINET
 void basic_fujinet(void) {

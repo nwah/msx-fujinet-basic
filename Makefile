@@ -3,7 +3,7 @@ ROM_AFILES = basic.asm
 
 fujinet-basic.rom: $(ROM_AFILES) $(ROM_CFILES)
 	zcc +msx -subtype=rom -pragma-define:CRT_MSX_CUSTOM_HEADER=1 \
-		-pragma-define:CRT_ORG_BSS=0xD700 \
+		-pragma-define:CRT_ORG_BSS=0xC700 \
 		-m \
 		-l/Users/nwah/fujinet/fujinet-basic-msx/_cache/fujinet-lib/fujinet-lib-experimental/r2r/msx/fujinet.msx.lib \
 		-I/Users/nwah/fujinet/fujinet-basic-msx/_cache/fujinet-lib/fujinet-lib-experimental/include \
@@ -17,11 +17,16 @@ fujinet-basic.rom: $(ROM_AFILES) $(ROM_CFILES)
 	@perl -e 'open F, ">>", $$ARGV[0] or die; print F "\xFF" x (16384 - -s $$ARGV[0])' $@
 	@echo "$@: $$(stat -f%z $@) bytes"
 
-# BSS is reserved from BASIC by lowering HIMEM to CRT_ORG_BSS (see rom_init in
-# basic.asm), so it has to stay clear of the work area a disk ROM may already
-# have taken off the top of RAM before our INIT runs. 0xE800 leaves room for
-# the usual one- or two-drive disk ROM.
-BSS_CEILING = 0xE800
+# BSS is reserved from BASIC by lowering HIMEM to CRT_ORG_BSS, but only after
+# Disk BASIC has connected (reserve_himem, run from the boot hook - lowering
+# HIMEM at INIT stops the disk ROM connecting). For that fence to sit below the
+# disk work area, BSS must END below where a disk ROM reserves off the top of
+# RAM: ~0xDE00 for one drive, lower for two. Ending below 0xD800 clears both.
+# reserve_himem refuses to fence if a disk ROM reserved even lower than our BSS
+# top, so overshooting the ceiling only costs the N: device on that machine -
+# it can never corrupt Disk BASIC. Raise CRT_ORG_BSS (and this ceiling) toward
+# the disk floor to hand more RAM back to BASIC on a known single-drive setup.
+BSS_CEILING = 0xD800
 
 check-bss: fujinet-basic.map
 	@end=$$(sed -n 's/^__BSS_END_head *= *\$$\([0-9A-Fa-f]*\).*/\1/p' $<); \

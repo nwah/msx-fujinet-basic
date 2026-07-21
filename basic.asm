@@ -21,6 +21,9 @@ STRINI  equ 0x6627      ; allocate string space (A = length) -> DSCTMP
 VALTYP  equ 0xF663
 SUBFLG  equ 0xF6A5      ; 0 = simple variable / array element
 DSCTMP  equ 0xF698      ; temporary string descriptor [len][addr_lo][addr_hi]
+MEMSIZ  equ 0xF672      ; highest address of string space (tracks HIMEM)
+STKTOP  equ 0xF674      ; top of BASIC's stack / bottom of string space
+FRETOP  equ 0xF69B      ; current top of free string space
 HIMEM   equ 0xFC4A      ; top of the RAM BASIC may allocate from
 
         ; C command handlers (one per BASIC command)
@@ -341,17 +344,20 @@ command_list:
 ;      this in crt0_init, which is a local symbol we cannot call, so the
 ;      two loops are repeated here.
 ;
-;   2. Reserve our RAM from BASIC by lowering HIMEM to the base of BSS.
-;      BASIC grows its variables and strings up towards HIMEM, so without
-;      this it will happily allocate straight over our buffers once a
-;      program gets big enough.
+;   2. NOT reserve RAM here. Reserving our buffers means lowering HIMEM, and
+;      doing that during the boot slot-scan stops a disk ROM from connecting:
+;      on openMSX with one drive the disk system silently falls back to
+;      cassette BASIC (no banner, FILES fails, full "28815 Bytes free"). Only
+;      clearing/copying our BSS is safe here, because at INIT that RAM is still
+;      free (below whatever a disk ROM later reserves off the top). The HIMEM
+;      reservation is deferred to reserve_himem, run from the boot hook once
+;      Disk BASIC has finished connecting - see install_boot_banner_hook.
 ;
-; BSS is linked at CRT_ORG_BSS (see the Makefile), which has to satisfy two
-; constraints: it must be at or above 0xC000, because page 2 is where the
-; FujiNet cartridge gets paged in, and it must end low enough to clear the
-; work area a disk ROM may already have reserved at the top of RAM before
-; our INIT ran. Hence the value in the Makefile rather than the 0xC000
-; default, and the "only ever lower it" check below.
+; BSS is linked at CRT_ORG_BSS (see the Makefile): at or above 0xC000, because
+; page 2 is where the FujiNet cartridge gets paged in, and ending below the
+; work area a disk ROM reserves off the top of RAM (~0xDE00 for one drive,
+; lower for two) so reserve_himem can later fence BASIC off below our buffers
+; without colliding with the disk work area above them.
 rom_init:
         xor     a                   ; clear BSS
         ld      hl,__BSS_head
@@ -363,20 +369,13 @@ rom_init:
         ld      bc,__DATA_END_tail - __DATA_head
         ld      a,b                 ; an empty data section would make the
         or      c                   ; LDIR below copy 64K, so skip it
-        jr      z,_ri_himem
+        jr      z,_ri_main
         ld      hl,__ROMABLE_END_tail   ; ROM image of the data section
         ld      de,__DATA_head
         ldir
 
-_ri_himem:
-        ld      hl,(HIMEM)
-        ld      de,__BSS_head
-        or      a
-        sbc     hl,de               ; CY set if HIMEM is already below our BSS
-        jr      c,_ri_main          ; someone reserved lower down - leave it
-        ld      (HIMEM),de
 _ri_main:
-        jp      _main               ; install the boot banner hook, then RET
+        jp      _main               ; install the boot + printer hooks, then RET
 
 ;----------------------------------------------------------------------
 ; call_handler: invoked by the BASIC expansion-statement hook.
@@ -564,6 +563,17 @@ dev_raise:
 ; device id 0 - BASIC allows only 4 ids per cartridge, not enough to give
 ; each unit one of its own.
 dev_name_check:
+        ; Our buffers are only fenced off if reserve_himem managed to lower
+        ; HIMEM to the base of our BSS. If HIMEM is still above that - a disk
+        ; ROM reserved down into our region, or a program raised HIMEM back
+        ; over our buffers - refuse the device rather than run I/O through
+        ; memory BASIC is free to allocate over.
+        ld      hl,__BSS_head
+        ld      de,(HIMEM)
+        or      a
+        sbc     hl,de               ; BSS base - HIMEM; CY set if HIMEM is higher
+        jr      c,dev_not_ours
+
         ld      hl,PROCNM
         ld      a,(hl)
         cp      04Eh                ; 'N'
@@ -675,12 +685,67 @@ _clear_hread:
         inc     hl
         djnz    _clear_hread
         call    _basic_fujinet_boot
+        call    reserve_himem       ; fence BASIC off below our BSS, now that
+                                    ; Disk BASIC has finished connecting
         pop     iy
         pop     ix
         pop     hl
         pop     de
         pop     bc
         pop     af
+        ret
+
+;----------------------------------------------------------------------
+; reserve_himem: lower HIMEM so BASIC will not allocate over our BSS buffers.
+;
+; This is the reservation rom_init deliberately does NOT do - lowering HIMEM
+; during the boot slot-scan stops a disk ROM from connecting. By the time the
+; boot hook runs, BASIC has cold-started and Disk BASIC has connected, so
+; HIMEM already sits just under the disk work area and it is safe to move.
+;
+; No program, variables or strings exist yet, so the entire boot-time memory
+; layout is the four pointers HIMEM/MEMSIZ/STKTOP/FRETOP clustered at the top
+; of RAM. Sliding all four down by one delta reproduces exactly the layout a
+; cold start with the lower HIMEM would have built - no per-field arithmetic.
+; The target is __BSS_head: BASIC then ends at our BSS base and our buffers
+; (up to __BSS_END, kept below the disk work area by CRT_ORG_BSS) sit in the
+; fenced-off gap between BASIC's top and the disk work area.
+;
+; If our BSS reaches above the live HIMEM (a disk ROM reserved so much that it
+; overlaps us) we cannot fence there without corrupting the disk work area, so
+; bail and leave HIMEM alone - dev_name_check tests the same HIMEM-vs-BSS
+; relationship and keeps N: disabled in that case.
+reserve_himem:
+        ld      hl,(HIMEM)
+        ld      de,__BSS_END_tail
+        or      a
+        sbc     hl,de               ; HIMEM - top of our BSS
+        ret     c                   ; BSS overlaps the disk work area: bail
+
+        ld      hl,(HIMEM)
+        ld      de,__BSS_head
+        or      a
+        sbc     hl,de               ; HL = delta = HIMEM - our BSS base
+        ret     z                   ; already fenced exactly here
+        ret     c                   ; HIMEM already below our base: leave it
+        ex      de,hl               ; DE = delta to subtract from each pointer
+
+        ld      hl,(HIMEM)
+        or      a
+        sbc     hl,de
+        ld      (HIMEM),hl
+        ld      hl,(MEMSIZ)
+        or      a
+        sbc     hl,de
+        ld      (MEMSIZ),hl
+        ld      hl,(STKTOP)
+        or      a
+        sbc     hl,de
+        ld      (STKTOP),hl
+        ld      hl,(FRETOP)
+        or      a
+        sbc     hl,de
+        ld      (FRETOP),hl
         ret
 
 ;======================================================================
