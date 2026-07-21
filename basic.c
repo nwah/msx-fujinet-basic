@@ -59,16 +59,6 @@ static void net_cmd_str(FN_ERR (*fn)(const char *)) {
   fujinet_deactivate();
 }
 
-// One string arg passed as (data, length), e.g. CALL FHASHADD(data$)
-static void dev_cmd_str_len(bool (*fn)(const void *, uint16_t)) {
-  cmd_expect('(');
-  cmd_get_string();
-  cmd_expect(')');
-  fujinet_activate();
-  fn(strbuf, (uint16_t)strlen(strbuf));
-  fujinet_deactivate();
-}
-
 // One output integer var filled from a 1-byte reply, e.g. CALL FWIFISTATUS(S%)
 static void dev_out_int_rv(uint8_t cmd) {
   cmd_expect('(');
@@ -408,80 +398,30 @@ static NetConfig  net_config;
 static HostSlot   host_slots[8];
 static DeviceSlot device_slots[8];
 static SSIDInfo   ssid_info;
-static unsigned long b64_len;
-static const uint8_t hash_bin_sizes[4] = {16, 20, 32, 64}; // MD5, SHA1, SHA256, SHA512
 
 // ============================================================
-// Base64 commands
+// Base64 / Hash commands  -- temporarily stubbed out (NOOP)
+//
+// The implementations were removed to reclaim ROM, but the commands still have
+// to consume their argument list so a CALL doesn't leave "(args)" on the line
+// for BASIC to choke on. These helpers parse and discard one argument; the
+// output-var forms simply leave the target variable unchanged.
 // ============================================================
 
-// CALL FB64ENCIN(data$)
-void basic_fb64encin(void) { dev_cmd_str_len(fuji_base64_encode_input); }
+// Consume "(expr$)" and discard.
+static void arg_str_noop(void) { cmd_expect('('); cmd_get_string(); cmd_expect(')'); }
 
-// CALL FB64ENCCOMPUTE
-void basic_fb64enccompute(void) {
-  fujinet_activate();
-  fuji_base64_encode_compute();
-  fujinet_deactivate();
-}
+// Consume "(VAR)" (any type) and discard.
+static void arg_var_noop(void) { cmd_expect('('); cmd_get_var(); cmd_expect(')'); }
 
-// CALL FB64ENCLEN(S%)
-void basic_fb64enclen(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  b64_len = 0;
-  fujinet_activate();
-  fuji_base64_encode_length(&b64_len);
-  fujinet_deactivate();
-  cmd_set_int((int)b64_len);
-}
-
-// CALL FB64ENCOUT(result$)
-void basic_fb64encout(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_base64_encode_output(buf2, 255);
-  fujinet_deactivate();
-  cmd_set_string(buf2);
-}
-
-// CALL FB64DECIN(data$)
-void basic_fb64decin(void) { dev_cmd_str_len(fuji_base64_decode_input); }
-
-// CALL FB64DECCOMPUTE
-void basic_fb64deccompute(void) {
-  fujinet_activate();
-  fuji_base64_decode_compute();
-  fujinet_deactivate();
-}
-
-// CALL FB64DECLEN(S%)
-void basic_fb64declen(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  b64_len = 0;
-  fujinet_activate();
-  fuji_base64_decode_length(&b64_len);
-  fujinet_deactivate();
-  cmd_set_int((int)b64_len);
-}
-
-// CALL FB64DECOUT(result$)
-void basic_fb64decout(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_base64_decode_output(buf2, 255);
-  fujinet_deactivate();
-  cmd_set_string(buf2);
-}
+void basic_fb64encin(void)      { arg_str_noop(); }
+void basic_fb64enccompute(void) {}
+void basic_fb64enclen(void)     { arg_var_noop(); }
+void basic_fb64encout(void)     { arg_var_noop(); }
+void basic_fb64decin(void)      { arg_str_noop(); }
+void basic_fb64deccompute(void) {}
+void basic_fb64declen(void)     { arg_var_noop(); }
+void basic_fb64decout(void)     { arg_var_noop(); }
 
 // ============================================================
 // WiFi commands
@@ -832,58 +772,35 @@ void basic_fwriteappkey(void) {
 }
 
 // ============================================================
-// Hash commands
+// Hash commands  -- temporarily stubbed out (NOOP), args still consumed
 // ============================================================
-
-// CALL FHASHCLEAR
-void basic_fhashclear(void) { dev_cmd0(FUJICMD_HASH_CLEAR); }
-
-// CALL FHASHADD(data$)
-void basic_fhashadd(void) { dev_cmd_str_len(fuji_hash_input); }
+void basic_fhashclear(void) {}
+void basic_fhashadd(void)   { arg_str_noop(); }
 
 // CALL FHASHCALC(type, hex, discard, result$)
-//   Compute hash of accumulated data. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
-//   hex: 1=hex string (recommended), 0=binary. discard: 1=free data after.
 void basic_fhashcalc(void) {
   cmd_expect('(');
-  int type    = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  int as_hex  = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  int discard = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_hash_calculate((hash_alg_t)type, (bool)as_hex, (bool)discard, (uint8_t *)buf2);
-  fujinet_deactivate();
-  if (!as_hex && type >= 0 && type < 4)
-    buf2[hash_bin_sizes[type]] = '\0';
-  cmd_set_string(buf2);
 }
 
 // CALL FHASHDATA(type, data$, hex, result$)
-//   Single-shot hash of data$. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
-//   hex: 1=hex string (recommended), 0=binary.
 void basic_fhashdata(void) {
   cmd_expect('(');
-  int type = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  cmd_get_string();                          // data$ -> strbuf
-  uint16_t len = (uint16_t)strlen(strbuf);
+  cmd_get_string();
   cmd_expect(',');
-  int as_hex = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_hash_data((hash_alg_t)type, (uint8_t *)strbuf, len, (bool)as_hex, (uint8_t *)buf2);
-  fujinet_deactivate();
-  if (!as_hex && type >= 0 && type < 4)
-    buf2[hash_bin_sizes[type]] = '\0';
-  cmd_set_string(buf2);
 }
 
 // ---------------------------------------------------------------------------
