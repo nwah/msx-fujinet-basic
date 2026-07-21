@@ -24,7 +24,7 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.3.1"
+#define FUJINET_BASIC_VERSION "0.3.2"
 
 // --- Shared runners for the regular device commands ------------------------
 // Most CALL commands are the same skeleton: parse args, page the cartridge in,
