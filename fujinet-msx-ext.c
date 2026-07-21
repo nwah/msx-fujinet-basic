@@ -43,56 +43,6 @@ bool fuji_bus_appkey_write(void *string, uint16_t length)
   return FUJICALL_D(FUJICMD_WRITE_APPKEY, string, length);
 }
 
-// ---------------------------------------------------------------------------
-// Base64 encode
-// ---------------------------------------------------------------------------
-
-bool fuji_base64_encode_input(char *s, uint16_t len)
-{
-  return FUJICALL_D(FUJICMD_BASE64_ENCODE_INPUT, s, len);
-}
-
-bool fuji_base64_encode_compute(void)
-{
-  return FUJICALL(FUJICMD_BASE64_ENCODE_COMPUTE);
-}
-
-bool fuji_base64_encode_length(unsigned long *len)
-{
-  uint16_t l = 0;
-  bool ok = FUJICALL_RV(FUJICMD_BASE64_ENCODE_LENGTH, &l, sizeof(l));
-  if (ok) *len = (unsigned long)l;
-  return ok;
-}
-
-bool fuji_base64_encode_output(char *s, uint16_t len)
-{
-  return FUJICALL_RV(FUJICMD_BASE64_ENCODE_OUTPUT, s, len);
-}
-
-// ---------------------------------------------------------------------------
-// Base64 decode
-// ---------------------------------------------------------------------------
-
-bool fuji_base64_decode_input(char *s, uint16_t len)
-{
-  return FUJICALL_D(FUJICMD_BASE64_DECODE_INPUT, s, len);
-}
-
-bool fuji_base64_decode_compute(void)
-{
-  return FUJICALL(FUJICMD_BASE64_DECODE_COMPUTE);
-}
-
-bool fuji_base64_decode_length(unsigned long *len)
-{
-  uint16_t l = 0;
-  bool ok = FUJICALL_RV(FUJICMD_BASE64_DECODE_LENGTH, &l, sizeof(l));
-  if (ok) *len = (unsigned long)l;
-  return ok;
-}
-
-bool fuji_base64_decode_output(char *s, uint16_t len)
-{
-  return FUJICALL_RV(FUJICMD_BASE64_DECODE_OUTPUT, s, len);
-}
+// Base64 encode/decode transport removed: the FB64* BASIC commands are
+// currently NOOP stubs (see the base64 section in basic.c), so these
+// implementations are unused. Restore from git history when re-enabling.

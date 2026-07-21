@@ -24,7 +24,128 @@ unsigned char *varptr;
 unsigned char vartype;
 unsigned char saved_slot;
 
-#define FUJINET_BASIC_VERSION "0.3.1"
+#define FUJINET_BASIC_VERSION "0.3.2"
+
+// --- Shared runners for the regular device commands ------------------------
+// Most CALL commands are the same skeleton: parse args, page the cartridge in,
+// issue one fuji_bus_call, page back out. The fuji_* operations are FUJICALL*
+// macros that differ only in a command byte, so a single runner per arg-shape
+// replaces a per-command copy of the (large, inlined) bus call.
+
+// No-arg device command, e.g. CALL FMOUNTALL
+static void dev_cmd0(uint8_t cmd) {
+  fujinet_activate();
+  FUJICALL(cmd);
+  fujinet_deactivate();
+}
+
+// One integer arg, e.g. CALL FMOUNTHOST(hs)
+static void dev_cmd_a1(uint8_t cmd) {
+  cmd_expect('(');
+  uint8_t v = cmd_get_int();
+  cmd_expect(')');
+  fujinet_activate();
+  FUJICALL_A1(cmd, v);
+  fujinet_deactivate();
+}
+
+// One string arg passed to a network function, e.g. CALL NCLOSE(spec$)
+static void net_cmd_str(FN_ERR (*fn)(const char *)) {
+  cmd_expect('(');
+  char *s = cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fn(s);
+  fujinet_deactivate();
+}
+
+// One output integer var filled from a 1-byte reply, e.g. CALL FWIFISTATUS(S%)
+static void dev_out_int_rv(uint8_t cmd) {
+  cmd_expect('(');
+  cmd_get_var();
+  cmd_expect(')');
+  uint8_t out = 0;
+  fujinet_activate();
+  FUJICALL_RV(cmd, &out, 1);
+  fujinet_deactivate();
+  cmd_set_int((int)out);
+}
+
+// Set an HTTP channel mode on a devicespec (shared by NHTTPMODE and the
+// start/end-headers shortcuts, which are the same call with a fixed mode).
+static void net_set_mode(const char *spec, uint8_t mode) {
+  fujinet_activate();
+  network_http_set_channel_mode(spec, mode);
+  fujinet_deactivate();
+}
+
+// Open a devicespec; shared by NOPEN and NHTTPDEL.
+static int net_open(const char *spec, uint8_t mode, uint8_t trans) {
+  int ret;
+  fujinet_activate();
+  ret = network_open(spec, mode, trans);
+  fujinet_deactivate();
+  return ret;
+}
+
+// Two string args (spec$, data$) passed to a network function; the spec is
+// stashed in buf because the second cmd_get_string overwrites strbuf.
+static void net_cmd_str_str(FN_ERR (*fn)(const char *, const char *)) {
+  cmd_expect('(');
+  cmd_get_string();
+  strcpy(buf, strbuf);
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  fn(buf, strbuf);
+  fujinet_deactivate();
+}
+
+// Two string args (spec$, data$) written to the device; shared by NWRITE and
+// NHTTPADDHDR (network_http_add_header is just network_write of the header).
+static void net_cmd_str_write(void) {
+  cmd_expect('(');
+  cmd_get_string();
+  strcpy(buf, strbuf);
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  fujinet_activate();
+  network_write(buf, strbuf, (uint16_t)strlen(strbuf));
+  fujinet_deactivate();
+}
+
+// --- Parse helpers for the pure-software slot commands (no device I/O) ------
+// "(n, VAR)" -> n, leaving VAR parsed for a following cmd_set_int/string.
+static int arg_int_var(void) {
+  cmd_expect('(');
+  int n = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_var();
+  cmd_expect(')');
+  return n;
+}
+
+// "(n, m)" -> n, with m returned via *second.
+static int arg_int_int(int *second) {
+  cmd_expect('(');
+  int n = cmd_get_int();
+  cmd_expect(',');
+  *second = cmd_get_int();
+  cmd_expect(')');
+  return n;
+}
+
+// "(n, s$)" -> n, with s$ left in strbuf.
+static int arg_int_str(void) {
+  cmd_expect('(');
+  int n = cmd_get_int();
+  cmd_expect(',');
+  cmd_get_string();
+  cmd_expect(')');
+  return n;
+}
 
 // CALL FUJINET
 void basic_fujinet(void) {
@@ -82,10 +203,7 @@ int basic_nopen(void) {
   int trans = cmd_get_int();
   cmd_expect(')');
 
-  fujinet_activate();
-  int ret = network_open(devicespec, (uint8_t)mode, (uint8_t)trans);
-  fujinet_deactivate();
-  return ret;
+  return net_open(devicespec, (uint8_t)mode, (uint8_t)trans);
 }
 
 // CALL NINIT
@@ -96,15 +214,7 @@ void basic_ninit(void) {
 }
 
 // CALL NCLOSE(devicespec$)
-void basic_nclose(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_close(devicespec);
-  fujinet_deactivate();
-}
+void basic_nclose(void) { net_cmd_str(network_close); }
 
 // CALL NSTATUS(devicespec$, bw%, conn%, err%)
 //   Queries the network device status and stores bytes-waiting, connection
@@ -196,29 +306,10 @@ void basic_nreadnb(void) {
 }
 
 // CALL NWRITE(devicespec$, data$)
-void basic_nwrite(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  strcpy(buf, devicespec);                  // save before next cmd_get_string overwrites strbuf
-  cmd_expect(',');
-  char *data = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_write(buf, data, (uint16_t)strlen(data));
-  fujinet_deactivate();
-}
+void basic_nwrite(void) { net_cmd_str_write(); }
 
 // CALL NJSONPARSE(devicespec$)
-void basic_njsonparse(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_json_parse(devicespec);
-  fujinet_deactivate();
-}
+void basic_njsonparse(void) { net_cmd_str(network_json_parse); }
 
 // CALL NJSONQUERY(devicespec$, query$, result$, S%)
 //   Issues a JSON path query; result$ receives the value string, S% the byte count.
@@ -249,32 +340,10 @@ void basic_njsonquery(void) {
 }
 
 // CALL NHTTPPOST(devicespec$, data$)
-void basic_nhttppost(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  strcpy(buf, devicespec);
-  cmd_expect(',');
-  char *data = cmd_get_string();
-  cmd_expect(')');
+void basic_nhttppost(void) { net_cmd_str_str(network_http_post); }
 
-  fujinet_activate();
-  network_http_post(buf, data);
-  fujinet_deactivate();
-}
-
-// CALL NHTTPPUT(devicespec$, data$)
-void basic_nhttpput(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  strcpy(buf, devicespec);
-  cmd_expect(',');
-  char *data = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_http_put(buf, data);
-  fujinet_deactivate();
-}
+// CALL NHTTPPUT(devicespec$, data$)  (network_http_put is an alias for _post)
+void basic_nhttpput(void) { net_cmd_str_str(network_http_post); }
 
 // CALL NHTTPDEL(devicespec$, trans)
 //   Opens a DELETE request (connection must be read/closed by caller).
@@ -284,35 +353,18 @@ void basic_nhttpdel(void) {
   cmd_expect(',');
   int trans = cmd_get_int();
   cmd_expect(')');
-
-  fujinet_activate();
-  network_http_delete(devicespec, (uint8_t)trans);
-  fujinet_deactivate();
+  net_open(devicespec, OPEN_MODE_HTTP_DELETE_H, (uint8_t)trans);
 }
 
-// CALL NHTTPADDHDR(devicespec$, header$)
-void basic_nhttpaddhdr(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  strcpy(buf, devicespec);
-  cmd_expect(',');
-  char *header = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_http_add_header(buf, header);
-  fujinet_deactivate();
-}
+// CALL NHTTPADDHDR(devicespec$, header$)  (== network_write of the header)
+void basic_nhttpaddhdr(void) { net_cmd_str_write(); }
 
 // CALL NHTTPSTARTHDR(devicespec$)
 void basic_nhttpstarthdr(void) {
   cmd_expect('(');
   char *devicespec = cmd_get_string();
   cmd_expect(')');
-
-  fujinet_activate();
-  network_http_start_add_headers(devicespec);
-  fujinet_deactivate();
+  net_set_mode(devicespec, HTTP_CHAN_MODE_SET_HEADERS);
 }
 
 // CALL NHTTPENDHDR(devicespec$)
@@ -320,10 +372,7 @@ void basic_nhttpendhdr(void) {
   cmd_expect('(');
   char *devicespec = cmd_get_string();
   cmd_expect(')');
-
-  fujinet_activate();
-  network_http_end_add_headers(devicespec);
-  fujinet_deactivate();
+  net_set_mode(devicespec, HTTP_CHAN_MODE_BODY);
 }
 
 // CALL NHTTPMODE(devicespec$, mode)
@@ -334,22 +383,11 @@ void basic_nhttpmode(void) {
   cmd_expect(',');
   int mode = cmd_get_int();
   cmd_expect(')');
-
-  fujinet_activate();
-  network_http_set_channel_mode(devicespec, mode);
-  fujinet_deactivate();
+  net_set_mode(devicespec, (uint8_t)mode);
 }
 
 // CALL NACCEPT(devicespec$)
-void basic_naccept(void) {
-  cmd_expect('(');
-  char *devicespec = cmd_get_string();
-  cmd_expect(')');
-
-  fujinet_activate();
-  network_accept(devicespec);
-  fujinet_deactivate();
-}
+void basic_naccept(void) { net_cmd_str(network_accept); }
 
 
 
@@ -360,96 +398,30 @@ static NetConfig  net_config;
 static HostSlot   host_slots[8];
 static DeviceSlot device_slots[8];
 static SSIDInfo   ssid_info;
-static unsigned long b64_len;
-static const uint8_t hash_bin_sizes[4] = {16, 20, 32, 64}; // MD5, SHA1, SHA256, SHA512
 
 // ============================================================
-// Base64 commands
+// Base64 / Hash commands  -- temporarily stubbed out (NOOP)
+//
+// The implementations were removed to reclaim ROM, but the commands still have
+// to consume their argument list so a CALL doesn't leave "(args)" on the line
+// for BASIC to choke on. These helpers parse and discard one argument; the
+// output-var forms simply leave the target variable unchanged.
 // ============================================================
 
-// CALL FB64ENCIN(data$)
-void basic_fb64encin(void) {
-  cmd_expect('(');
-  cmd_get_string();
-  cmd_expect(')');
-  uint16_t len = (uint16_t)strlen(strbuf);
-  fujinet_activate();
-  fuji_base64_encode_input(strbuf, len);
-  fujinet_deactivate();
-}
+// Consume "(expr$)" and discard.
+static void arg_str_noop(void) { cmd_expect('('); cmd_get_string(); cmd_expect(')'); }
 
-// CALL FB64ENCCOMPUTE
-void basic_fb64enccompute(void) {
-  fujinet_activate();
-  fuji_base64_encode_compute();
-  fujinet_deactivate();
-}
+// Consume "(VAR)" (any type) and discard.
+static void arg_var_noop(void) { cmd_expect('('); cmd_get_var(); cmd_expect(')'); }
 
-// CALL FB64ENCLEN(S%)
-void basic_fb64enclen(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  b64_len = 0;
-  fujinet_activate();
-  fuji_base64_encode_length(&b64_len);
-  fujinet_deactivate();
-  cmd_set_int((int)b64_len);
-}
-
-// CALL FB64ENCOUT(result$)
-void basic_fb64encout(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_base64_encode_output(buf2, 255);
-  fujinet_deactivate();
-  cmd_set_string(buf2);
-}
-
-// CALL FB64DECIN(data$)
-void basic_fb64decin(void) {
-  cmd_expect('(');
-  cmd_get_string();
-  cmd_expect(')');
-  uint16_t len = (uint16_t)strlen(strbuf);
-  fujinet_activate();
-  fuji_base64_decode_input(strbuf, len);
-  fujinet_deactivate();
-}
-
-// CALL FB64DECCOMPUTE
-void basic_fb64deccompute(void) {
-  fujinet_activate();
-  fuji_base64_decode_compute();
-  fujinet_deactivate();
-}
-
-// CALL FB64DECLEN(S%)
-void basic_fb64declen(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  b64_len = 0;
-  fujinet_activate();
-  fuji_base64_decode_length(&b64_len);
-  fujinet_deactivate();
-  cmd_set_int((int)b64_len);
-}
-
-// CALL FB64DECOUT(result$)
-void basic_fb64decout(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_base64_decode_output(buf2, 255);
-  fujinet_deactivate();
-  cmd_set_string(buf2);
-}
+void basic_fb64encin(void)      { arg_str_noop(); }
+void basic_fb64enccompute(void) {}
+void basic_fb64enclen(void)     { arg_var_noop(); }
+void basic_fb64encout(void)     { arg_var_noop(); }
+void basic_fb64decin(void)      { arg_str_noop(); }
+void basic_fb64deccompute(void) {}
+void basic_fb64declen(void)     { arg_var_noop(); }
+void basic_fb64decout(void)     { arg_var_noop(); }
 
 // ============================================================
 // WiFi commands
@@ -467,28 +439,10 @@ void basic_fwifienabled(void) {
 }
 
 // CALL FWIFISTATUS(S%)
-void basic_fwifistatus(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  fujinet_activate();
-  uint8_t wst = 0;
-  fuji_get_wifi_status(&wst);
-  fujinet_deactivate();
-  cmd_set_int((int)wst);
-}
+void basic_fwifistatus(void) { dev_out_int_rv(FUJICMD_GET_WIFISTATUS); }
 
 // CALL FWIFISCAN(S%)
-void basic_fwifiscan(void) {
-  cmd_expect('(');
-  cmd_get_var();
-  cmd_expect(')');
-  fujinet_activate();
-  uint8_t cnt = 0;
-  fuji_scan_for_networks(&cnt);
-  fujinet_deactivate();
-  cmd_set_int((int)cnt);
-}
+void basic_fwifiscan(void) { dev_out_int_rv(FUJICMD_SCAN_NETWORKS); }
 
 // CALL FWIFISCANRESULT(n, ssid$, rssi%)
 void basic_fwifiscanresult(void) {
@@ -556,38 +510,23 @@ void basic_fsavehostslots(void) {
 
 // CALL FGETHOSTSLOT(slot, name$)  -- pure software
 void basic_fgethostslot(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
+  int slot = arg_int_var();
   if (slot < 0) slot = 0;
   if (slot > 7) slot = 7;
-  cmd_expect(',');
-  cmd_get_var();
-  cmd_expect(')');
   cmd_set_string((char*)host_slots[slot]);
 }
 
 // CALL FSETHOSTSLOT(slot, name$)  -- pure software
 void basic_fsethostslot(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
+  int slot = arg_int_str();
   if (slot < 0) slot = 0;
   if (slot > 7) slot = 7;
-  cmd_expect(',');
-  cmd_get_string();
-  cmd_expect(')');
   strncpy((char*)host_slots[slot], strbuf, 31);
   ((char*)host_slots[slot])[31] = '\0';
 }
 
 // CALL FMOUNTHOST(hs)
-void basic_fmounthost(void) {
-  cmd_expect('(');
-  int hs = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_mount_host_slot((uint8_t)hs);
-  fujinet_deactivate();
-}
+void basic_fmounthost(void) { dev_cmd_a1(FUJICMD_MOUNT_HOST); }
 
 // CALL FGETHOSTPREFIX(hs, prefix$)
 void basic_fgethostprefix(void) {
@@ -634,61 +573,39 @@ void basic_fsavedevslots(void) {
 
 // CALL FGETDEVSLOTHOST(slot, S%)  -- pure software
 void basic_fgetdevslothost(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  cmd_get_var();
-  cmd_expect(')');
+  int slot = arg_int_var();
   cmd_set_int((int)device_slots[slot].hostSlot);
 }
 
 // CALL FGETDEVSLOTMODE(slot, S%)  -- pure software
 void basic_fgetdevslotmode(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  cmd_get_var();
-  cmd_expect(')');
+  int slot = arg_int_var();
   cmd_set_int((int)device_slots[slot].mode);
 }
 
 // CALL FGETDEVSLOTFILE(slot, file$)  -- pure software
 void basic_fgetdevslotfile(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  cmd_get_var();
-  cmd_expect(')');
+  int slot = arg_int_var();
   cmd_set_string((char*)device_slots[slot].file);
 }
 
 // CALL FSETDEVSLOTHOST(slot, host)  -- pure software
 void basic_fsetdevslothost(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  int host = cmd_get_int();
-  cmd_expect(')');
+  int host;
+  int slot = arg_int_int(&host);
   device_slots[slot].hostSlot = (uint8_t)host;
 }
 
 // CALL FSETDEVSLOTMODE(slot, mode)  -- pure software
 void basic_fsetdevslotmode(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  int mode = cmd_get_int();
-  cmd_expect(')');
+  int mode;
+  int slot = arg_int_int(&mode);
   device_slots[slot].mode = (uint8_t)mode;
 }
 
 // CALL FSETDEVSLOTFILE(slot, file$)  -- pure software
 void basic_fsetdevslotfile(void) {
-  cmd_expect('(');
-  int slot = cmd_get_int();
-  cmd_expect(',');
-  cmd_get_string();
-  cmd_expect(')');
+  int slot = arg_int_str();
   strncpy((char*)device_slots[slot].file, strbuf, FILE_MAXLEN-1);
   device_slots[slot].file[FILE_MAXLEN-1] = '\0';
 }
@@ -706,41 +623,16 @@ void basic_fmount(void) {
 }
 
 // CALL FUNMOUNT(ds)
-void basic_funmount(void) {
-  cmd_expect('(');
-  int ds = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_unmount_disk_image((uint8_t)ds);
-  fujinet_deactivate();
-}
+void basic_funmount(void) { dev_cmd_a1(FUJICMD_UNMOUNT_IMAGE); }
 
 // CALL FMOUNTALL
-void basic_fmountall(void) {
-  fujinet_activate();
-  fuji_mount_all();
-  fujinet_deactivate();
-}
+void basic_fmountall(void) { dev_cmd0(FUJICMD_MOUNT_ALL); }
 
 // CALL FENABLEDEV(d)
-void basic_fenabledev(void) {
-  cmd_expect('(');
-  int d = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_enable_device((uint8_t)d);
-  fujinet_deactivate();
-}
+void basic_fenabledev(void) { dev_cmd_a1(FUJICMD_ENABLE_DEVICE); }
 
 // CALL FDISABLEDEV(d)
-void basic_fdisabledev(void) {
-  cmd_expect('(');
-  int d = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_disable_device((uint8_t)d);
-  fujinet_deactivate();
-}
+void basic_fdisabledev(void) { dev_cmd_a1(FUJICMD_DISABLE_DEVICE); }
 
 // CALL FSETFILE(ds, hs, mode, file$)
 void basic_fsetfile(void) {
@@ -790,11 +682,7 @@ void basic_fopendirex(void) {
 }
 
 // CALL FCLOSEDIR
-void basic_fclosedir(void) {
-  fujinet_activate();
-  fuji_close_directory();
-  fujinet_deactivate();
-}
+void basic_fclosedir(void) { dev_cmd0(FUJICMD_CLOSE_DIRECTORY); }
 
 // CALL FREADDIR(result$)
 void basic_freaddir(void) {
@@ -822,24 +710,10 @@ void basic_fsetdirpos(void) {
 // ============================================================
 
 // CALL FSETBOOTCFG(toggle)
-void basic_fsetbootcfg(void) {
-  cmd_expect('(');
-  int toggle = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_set_boot_config((uint8_t)toggle);
-  fujinet_deactivate();
-}
+void basic_fsetbootcfg(void) { dev_cmd_a1(FUJICMD_CONFIG_BOOT); }
 
 // CALL FSETBOOTMODE(mode)
-void basic_fsetbootmode(void) {
-  cmd_expect('(');
-  int mode = cmd_get_int();
-  cmd_expect(')');
-  fujinet_activate();
-  fuji_set_boot_mode((uint8_t)mode);
-  fujinet_deactivate();
-}
+void basic_fsetbootmode(void) { dev_cmd_a1(FUJICMD_SET_BOOT_MODE); }
 
 // ============================================================
 // App Key commands
@@ -898,70 +772,35 @@ void basic_fwriteappkey(void) {
 }
 
 // ============================================================
-// Hash commands
+// Hash commands  -- temporarily stubbed out (NOOP), args still consumed
 // ============================================================
-
-// CALL FHASHCLEAR
-void basic_fhashclear(void) {
-  fujinet_activate();
-  fuji_hash_clear();
-  fujinet_deactivate();
-}
-
-// CALL FHASHADD(data$)
-void basic_fhashadd(void) {
-  cmd_expect('(');
-  cmd_get_string();
-  cmd_expect(')');
-  uint16_t len = (uint16_t)strlen(strbuf);
-  fujinet_activate();
-  fuji_hash_add((uint8_t *)strbuf, len);
-  fujinet_deactivate();
-}
+void basic_fhashclear(void) {}
+void basic_fhashadd(void)   { arg_str_noop(); }
 
 // CALL FHASHCALC(type, hex, discard, result$)
-//   Compute hash of accumulated data. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
-//   hex: 1=hex string (recommended), 0=binary. discard: 1=free data after.
 void basic_fhashcalc(void) {
   cmd_expect('(');
-  int type    = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  int as_hex  = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  int discard = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_hash_calculate((hash_alg_t)type, (bool)as_hex, (bool)discard, (uint8_t *)buf2);
-  fujinet_deactivate();
-  if (!as_hex && type >= 0 && type < 4)
-    buf2[hash_bin_sizes[type]] = '\0';
-  cmd_set_string(buf2);
 }
 
 // CALL FHASHDATA(type, data$, hex, result$)
-//   Single-shot hash of data$. type: 0=MD5 1=SHA1 2=SHA256 3=SHA512
-//   hex: 1=hex string (recommended), 0=binary.
 void basic_fhashdata(void) {
   cmd_expect('(');
-  int type = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
-  cmd_get_string();                          // data$ -> strbuf
-  uint16_t len = (uint16_t)strlen(strbuf);
+  cmd_get_string();
   cmd_expect(',');
-  int as_hex = cmd_get_int();
+  cmd_get_int();
   cmd_expect(',');
   cmd_get_var();
   cmd_expect(')');
-  memset(buf2, 0, sizeof(buf2));
-  fujinet_activate();
-  fuji_hash_data((hash_alg_t)type, (uint8_t *)strbuf, len, (bool)as_hex, (uint8_t *)buf2);
-  fujinet_deactivate();
-  if (!as_hex && type >= 0 && type < 4)
-    buf2[hash_bin_sizes[type]] = '\0';
-  cmd_set_string(buf2);
 }
 
 // ---------------------------------------------------------------------------
