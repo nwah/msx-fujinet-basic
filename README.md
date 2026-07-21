@@ -118,7 +118,7 @@ otherwise report as free.
 
 ## Files — the `N:` device
 
-FujiNet registers itself as an MSX-BASIC device named `N:`, so the standard file
+FujiNet registers itself as an MSX-BASIC network device, so the standard file
 statements work against network paths directly:
 
 `LOAD` `SAVE` `RUN` `MERGE` `OPEN` `CLOSE` `PRINT#` `INPUT#` `LINE INPUT#` `INPUT$` `EOF`
@@ -126,7 +126,15 @@ statements work against network paths directly:
 Sequential access only. `GET#`/`PUT#` raise an error, and `LOC`/`LOF`/`FPOS` return 0 —
 a network stream has no length or seekable position to report.
 
-Use `N:` (or `N1:`–`N8:` to pick a network unit) where a filename would normally go.
+Use a numbered unit — `N1:` through `N8:` — where a filename would normally go; `N1:`
+is unit 1.
+
+> **Use `N1:`, not bare `N:`, when a disk drive is present.** Under Disk BASIC the
+> filename parser treats a single letter as a drive letter, so `N:` is read as
+> (non-existent) drive `N` and fails with `Bad drive name` before FujiNet ever sees
+> it — the cartridge's device hook is only consulted for names longer than one
+> character. Bare `N:` works only on a machine with no disk ROM (plain cassette
+> BASIC). `N1:`–`N8:` work in both.
 
 Because MSX-BASIC only ever hands a device an 8.3 filename — never the full string
 you typed — the scheme, host and directory come from `CALL NCD` instead of the
@@ -140,13 +148,13 @@ filename itself.
 
 ```basic
 CALL NCD("TNFS://myserver.local/BAS/")
-SAVE "N:HELLO.BAS"
+SAVE "N1:HELLO.BAS"
 NEW
-LOAD "N:HELLO.BAS"
+LOAD "N1:HELLO.BAS"
 RUN
 ```
 
-`SAVE "N:HELLO.BAS"` above resolves to `N1:TNFS://myserver.local/BAS/HELLO.BAS`.
+`SAVE "N1:HELLO.BAS"` above resolves to `N1:TNFS://myserver.local/BAS/HELLO.BAS`.
 
 Files are read and written as ASCII, terminated with Ctrl-Z (`&H1A`) the same way
 MSX disk BASIC writes them, so programs saved here load back on any MSX.
